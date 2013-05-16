@@ -1,0 +1,18 @@
+
+load magdata.txt
+Mag = data';
+[U,c] = calib_magneto(Mag);
+
+
+N = size(Mag, 1);
+
+figure;
+hold on;
+plot3(Mag(:,1),Mag(:,2),Mag(:,3));
+
+scale = average(
+
+Caldata=(Mag+repmat(c,N,1))*U;
+plot3(Caldata(:,1),Caldata(:,2),Caldata(:,3),'r');
+axis equal
+hold off
