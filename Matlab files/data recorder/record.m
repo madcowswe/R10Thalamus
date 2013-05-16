@@ -1,4 +1,4 @@
-maxSamples = 2000;
+maxSamples = 10000;
 
 fprintf(1, 'Preparing Figures\n');
 
@@ -27,7 +27,7 @@ sampleLast = 1;
 fprintf(1, 'Ready, press any key to go\n');
 pause;
 
-s = serial('COM27');
+s = serial('COM62');
 fopen(s);
 
 fprintf(1, 'Collecting data...\n');
