@@ -81,10 +81,11 @@ static inline unsigned int MakeInt(unsigned char byte4, unsigned char byte3, uns
 */
 
 // *** Fast trig approximation functions
-float invSqrt(float x);
+float finvSqrt(float x);
 float fatan2(float y, float x);
 float fasin(float x);
 float fsin(float x);
+float fcos(float x);
 
 // *** Random number functions
 #if RAND_MERSENNE
@@ -133,7 +134,7 @@ void WaitDelay(unsigned int milliseconds);
 #if SYSTICK_EN
     void SysTickInit(void);
     void SysTickStop(void);
-    extern volatile unsigned int FUNCSysTicks;
+    extern volatile unsigned int FUNCSysTicks, FUNCTimeout;
 
     extern WEAK void SysTickInterrupt(void);
     extern WEAK void SDTick(void);
@@ -144,13 +145,12 @@ void WaitDelay(unsigned int milliseconds);
 
 // *** Watchdog timer functions
 #define INTERRUPT   0x40
-#define RESET       0x2
-/*
-void WDTInit(unsigned int milliseconds, unsigned char mode);
+void WDTInit(unsigned int milliseconds);
 void WDTStop(void);
-static inline void WDTFeed(void) {    LPC_WDT->FEED = 0xAA; LPC_WDT->FEED = 0x55;    }
+static inline void WDTFeed(void) {    LPC_WWDT->FEED = 0xAA; LPC_WWDT->FEED = 0x55;    }
 extern WEAK void WDTInterrupt(void);
 
+/*
 // *** Clockout functions
 //#define OFF        0  // this defined as such elsewhere
 #define IRCOSC      1
@@ -383,15 +383,15 @@ void Port1Invert(unsigned int pins, unsigned char value);
 void Port0Pull(unsigned int pins, unsigned char value);
 void Port1Pull(unsigned int pins, unsigned char value);
 
-/*
+
 // *** Configure interrupts on a pin (note: default state is interrupts disabled)
 //#define OFF       0  // this defined as such elsewhere
-#define FALLING     0x1
-#define RISING      0x2
+#define RISING      0x1
+#define FALLING     0x2
 #define BOTH        0x3
 #define LOW         0x10
 #define HIGH        0x20
-void Port0SetInterrupt(unsigned short pins, unsigned char mode);
+/*void Port0SetInterrupt(unsigned short pins, unsigned char mode);
 void Port1SetInterrupt(unsigned short pins, unsigned char mode);
 
 // *** Function prototypes for user-supplied port-wide interrupt functions
@@ -647,7 +647,7 @@ static inline void Timer3EnableInterrupt(void) { IRQEnable(CT32B1_IRQn); }
 // *** Timer match control
 //#define OFF       0       // already defined elsewhere
 //#define INTERRUPT   0x40  // already defined elsewhere
-//#define RESET       0x2   // already defined elsewhere
+#define RESET       0x2   // already defined elsewhere
 #define STOP        0x4
 #define PWM         0x8
 #define OUTPUTOFF   0       // this one doesn't need to be specified
@@ -707,11 +707,12 @@ static inline void Timer3SetStatus(unsigned char status) { LPC_CT32B1->EMR &= 0x
 
 // *** Timer capture control
 // #define OFF         0       // already defined elsewhere
-// #define FALLING     0x1     // already defined elsewhere
-// #define RISING      0x2     // already defined elsewhere
+//#define RISING      0x1     // already defined elsewhere
+//#define FALLING     0x2     // already defined elsewhere
 // #define BOTH        0x3     // already defined elsewhere
 // #define INTERRUPT   0x40    // already defined elsewhere
 #define COUNTER   0x10
+#define PWRESET 0x80
 
 void Timer0Capture(unsigned char mode);
 void Timer1Capture(unsigned char mode);
@@ -774,7 +775,14 @@ void ADCStop(void);
 
 // *** Read ADC value
 unsigned short ADCRead(unsigned char channel);
+static inline void ADCTrigger(unsigned char channel) {
+    LPC_ADC->CR &= ~0x000000ff;
+    LPC_ADC->CR |= 0x1000000 | channel;      // Start now!
+}
 
+static inline unsigned short ADCGet(void) {
+    return ((LPC_ADC->GDR >> 4) & 0xFFF); 
+}
 // *** Prototype for user-supplied ADC interrupt function (only used when ADC is set to interrupt mode)
 extern WEAK void ADCInterrupt(unsigned char ADCChannel, unsigned short ADCValue);
 
@@ -887,14 +895,13 @@ static inline void LEDToggle(unsigned int pins) { Port0Toggle(pins); FUNCLEDStat
 
 static inline void RSTInit(void) { Port0Init(PIN0); Port0SetIn(PIN0); }
 static inline void PRGInit(void) { Port0Init(PIN1); Port0SetIn(PIN1); }
-static inline unsigned char RSTRead(void) { Port0SetIn(PIN0); __NOP(); return Port0Read(PIN0); }
-static inline unsigned char PRGRead(void) { Port0SetIn(PIN1); __NOP(); return Port0Read(PIN1); }
+static inline unsigned char RSTRead(void) { Port0SetIn(PIN0); __NOP(); __NOP(); __NOP(); return Port0Read(PIN0); }
+static inline unsigned char PRGRead(void) { Port0SetIn(PIN1); __NOP(); __NOP(); __NOP(); return Port0Read(PIN1); }
 
 unsigned char RSTPoll(void);
 unsigned char PRGPoll(void);
 
 static inline void RSTReset(void) { ResetInit(); }
-
 
 
 // ****************************************************************************
@@ -911,11 +918,16 @@ static inline void RSTReset(void) { ResetInit(); }
     #define ID_ILINK_INPUTS0    0x4000
     #define ID_ILINK_OUTPUTS0   0x4100
     #define ID_ILINK_RAWIMU     0x4200
+    #define ID_ILINK_SCALEDIMU  0x4201
+    #define ID_ILINK_POSITION   0x7d00
+    #define ID_ILINK_ALTITUDE   0x7e00
     #define ID_ILINK_ATTITUDE   0x7f00
+    #define ID_ILINK_ATDEMAND   0x7f01
+    #define ID_ILINK_MODEMAND   0x7f02    
 
-    typedef struct ilink_identify_struct {
-        unsigned short deviceID;
-        unsigned int firmVersion;
+    typedef struct ilink_identify_struct {  // Contains the ID of the craft
+        unsigned short deviceID;            // ID: Thalamus is 1 for example
+        unsigned int firmVersion;           // Firmware version: check that this matches
         unsigned short isNew;
     } PACKED ilink_identify_t;
     
@@ -925,14 +937,14 @@ static inline void RSTReset(void) { ResetInit(); }
         unsigned short isNew;
     } PACKED ilink_thalctrl_t;
     
-    typedef struct ilink_thalstat_struct {
-        unsigned short flightMode;
-        unsigned short sensorStatus;
-        unsigned short battVoltage;
+    typedef struct ilink_thalstat_struct {  // Flight status
+        unsigned short flightMode;          // Bitfield, bit 4 is GPS mode, bit 3 is altitude control, bit 2 is yaw control, bit 1 is anglerate control, bit 0 is stabilization
+        unsigned short sensorStatus;        // Bitfield, bit 6 is Baro status, bit5 is magneto status, bit 4 is Gyro status, bit 3 is Accel status, bit 2-0 flight status (corresponds to MAV_STATE)    
+        unsigned short battVoltage;         // Battery voltage
         unsigned short isNew;
     } PACKED ilink_thalstat_t; 
 
-    typedef struct ilink_rawimu_struct {
+    typedef struct ilink_imu_struct {       // IMU data
         signed short xAcc;
         signed short yAcc;
         signed short zAcc;
@@ -943,9 +955,9 @@ static inline void RSTReset(void) { ResetInit(); }
         signed short yMag;
         signed short zMag;
         unsigned short isNew;
-    } PACKED ilink_rawimu_t;
+    } PACKED ilink_imu_t;
     
-    typedef struct ilink_attitude_struct {
+    typedef struct ilink_attitude_struct {  // Attitude data
         float roll;
         float pitch;
         float yaw;
@@ -955,7 +967,26 @@ static inline void RSTReset(void) { ResetInit(); }
         unsigned short isNew;
     } PACKED ilink_attitude_t;
     
-    typedef struct ilink_thalparam_struct {
+    typedef struct ilink_position_struct {  // Attitude data
+        float craftX;
+        float craftY;
+        float craftZ;
+        float targetX;
+        float targetY;
+        float targetZ;
+        unsigned short isNew;
+    } PACKED ilink_position_t;
+    
+    
+    typedef struct ilink_atdemand_struct {  // Attitude data
+        float roll;
+        float pitch;
+        float yaw;
+        float thrust;
+        unsigned short isNew;
+    } PACKED ilink_atdemand_t;
+    
+    typedef struct ilink_thalparam_struct { // Parameters
         unsigned short paramID;
         float paramValue;
         unsigned short paramCount;
@@ -963,17 +994,24 @@ static inline void RSTReset(void) { ResetInit(); }
         unsigned short isNew;
     } PACKED ilink_thalparam_t;
     
-    typedef struct ilink_thalpareq_struct {
-        unsigned short reqType;
-        unsigned short paramID;
-        char paramName[16];
+    typedef struct ilink_thalpareq_struct { // Parameter request
+        unsigned short reqType;             // Request type, 0 is get all, 1 is get One, 2 is save all, 3 is reload all
+        unsigned short paramID;             // Parameter to request, set to 0xffff to fetch by name
+        char paramName[16];                 // Parameter name to request    
         unsigned short isNew;
     } PACKED ilink_thalpareq_t;
     
-    typedef struct ilink_iochan_struct {
+    typedef struct ilink_iochan_struct {    // Input/output channel data
         unsigned short channel[6];
         unsigned short isNew;
     } PACKED ilink_iochan_t;
+    
+    typedef struct ilink_altitude_struct {  // Altitude data
+        float relAlt;                      // E.g. ultrasound
+        float absAlt;                      // E.g. barometer
+        float difAlt;                      // Change in altitude
+        unsigned short isNew;
+    } PACKED ilink_altitude_t;
     
     extern volatile unsigned char FUNCILinkState;
     extern volatile unsigned short FUNCILinkID, FUNCILinkChecksumA, FUNCILinkChecksumB, FUNCILinkLength, FUNCILinkPacket;
@@ -1002,34 +1040,67 @@ static inline void RSTReset(void) { ResetInit(); }
 #if WHO_AM_I == I_AM_THALAMUS
 
     // ****************************************************************************
+    // *** ULTRA Functions (Thalamus only)
+    // ****************************************************************************
+    
+    extern volatile unsigned char FUNCUltraNewData;
+    extern volatile unsigned short FUNCUltraValueMM;
+    extern volatile unsigned char FUNCUltraOutOfRange;
+    extern volatile unsigned char FUNCUltraUnderRange;
+    extern volatile unsigned char FUNCUltraFastRate;
+    
+    unsigned char UltraInit(void);
+    static inline void UltraSlow(void) { FUNCUltraFastRate = 0; }
+    static inline void UltraFast(void) { FUNCUltraFastRate = 1; }
+    unsigned short UltraGetData(void);
+    unsigned short UltraGetNewData(void);
+    unsigned short UltraGetRawData(void);
+    unsigned short UltraGetNewRawData(void);
+
+    // ****************************************************************************
     // *** RX Functions (Thalamus only)
     // ****************************************************************************
+    #if RX_EN
+        void RXUARTInit(void);
+        void RXInit(void);
+        void RXBind(void);
+        void RXDelay(void);
+        
+        static inline void RXPowerDown(void) { Port0Write(PIN17, 1); }
+        static inline void RXPowerUp(void) { Port0Write(PIN17, 0); }
 
-    void RXInit(void);
-    void RXBind(void);
-    void RXDelay(void);
+        #define RX_THRO 0
+        #define RX_AILE 1
+        #define RX_ELEV 2
+        #define RX_RUDD 3
+        #define RX_GEAR 4
+        #define RX_AUX1 4
+        #define RX_FLAP 5
+        #define RX_AUX2 6
 
-    static inline void RXPowerDown(void) { Port0Write(PIN17, 1); }
-    static inline void RXPowerUp(void) { Port0Write(PIN17, 0); }
+        extern volatile unsigned char FUNCRXCount;
+        extern volatile unsigned char FUNCRXLastByte;
+        extern volatile unsigned char FUNCRXChannel;
+        extern volatile unsigned char FUNCRXNewData;
+        
+        
+        extern volatile unsigned char FUNCRXStatus;
+        
+        #if RX_TYPE == 0
+        extern unsigned short FUNCRXChanBuffer[7];
+        extern unsigned short FUNCRXChan[7];
+        #else
+        extern unsigned short FUNCRXChanBuffer[18];
+        extern unsigned short FUNCRXChan[18];
+        extern void RXUARTParityError(void);
+        #endif
+        
 
-    #define RX_THRO 0
-    #define RX_AILE 1
-    #define RX_ELEV 2
-    #define RX_RUDD 3
-    #define RX_GEAR 4
-    #define RX_AUX1 4
-    #define RX_FLAP 5
-    #define RX_AUX2 6
-
-    extern volatile unsigned char FUNCRXCount;
-    extern volatile unsigned char FUNCRXLastByte;
-    extern volatile unsigned char FUNCRXChannel;
-    extern volatile unsigned char FUNCRXNewData;
-    extern unsigned short FUNCRXChanBuffer[7];
-    extern unsigned short FUNCRXChan[7];
-
-    unsigned char RXProcess(unsigned char RXByte);
-    unsigned char RXGetData(unsigned short * RXChannels);
+        unsigned char RXProcess(unsigned char RXByte);
+        unsigned char RXGetData(unsigned short * RXChannels);
+        extern void RXUARTInterrupt(unsigned char UARTData);
+        extern void RXWDTInterrupt(void);
+    #endif
 
     // ****************************************************************************
     // *** PWM Ouput Functions
@@ -1100,12 +1171,16 @@ static inline void RSTReset(void) { ResetInit(); }
     #define ACCEL_ADDR	0x30
     #define GYRO_ADDR	0xd0
     #define MAGNETO_ADDR	0x3c
+    #define BARO_ADDR	0xb8
 
     void SensorInit(void);
     unsigned char GetAccel(signed short * data);
     unsigned char GetGyro(signed short * data);
-    signed short GetTemp(void);
     unsigned char GetMagneto(signed short * data);
+    unsigned int GetBaro(void);
+    float GetBaroPressure(void);
+    float GetBaroAlt(void);
+    float GetBaroTemp(void);
     void SensorSleep(void);
 
 #endif
@@ -1274,8 +1349,7 @@ static inline void RSTReset(void) { ResetInit(); }
     // *** Flash Functions
     // ****************************************************************************
     
-    #if SSP1_EN
-    #if FLASH_EN
+    #if SSP1_EN & FLASH_EN
         static inline void FlashSEL(void) { Port0Write(PIN23, 0); }
         static inline void FlashCLR(void) { SSP1Wait(); Port0Write(PIN23, 1); }
     
@@ -1314,7 +1388,6 @@ static inline void RSTReset(void) { ResetInit(); }
         void FlashRead(unsigned int address, unsigned char * data, unsigned int length);
         
     #endif
-    #endif
 #endif
     
 #if WHO_AM_I == I_AM_HYPO || WHO_AM_I == I_AM_HYPX        
@@ -1322,13 +1395,133 @@ static inline void RSTReset(void) { ResetInit(); }
     // *** XBee Functions
     // ****************************************************************************
     
-    #if UART_EN
+    #if UART_EN && SYSTICK_EN && XBEE_EN
+    
+        #define ID_XBEE_ATCOMMAND   0x08
+        #define ID_XBEE_ATCOMMANDQ  0x09
+        #define ID_XBEE_ATRESPONSE  0x88
+        #define ID_XBEE_TRANSMITSTATUS 0x8b
+        #define ID_XBEE_MODEMSTATUS 0x8A
+        #define ID_XBEE_RECEIVEPACKET   0x90
+        #define ID_XBEE_TRANSMITREQUEST 0x10
+        #define IX_XBEE_NODEIDENTIFICATIONINDICATOR 0x95
+        
+        #define TBUF_LEN    10
+    
+        typedef struct xbee_modem_status_struct {
+            unsigned char status;
+            volatile unsigned char isNew;
+            unsigned short varLen;
+        } PACKED xbee_modem_status_t;
+
+        typedef struct xbee_at_command_struct {
+            unsigned char frameID;
+            unsigned char ATCommand1;
+            unsigned char ATCommand2;
+            unsigned char parameterValue[16];
+            volatile unsigned char isNew;
+            unsigned short varLen;
+        } PACKED xbee_at_command_t;
+
+        typedef struct xbee_at_response_struct {
+            unsigned char frameID;
+            unsigned char ATCommand1;
+            unsigned char ATCommand2;
+            unsigned char commandStatus;
+            unsigned char commandData[8];
+            volatile unsigned char isNew;
+            unsigned short varLen;
+        } PACKED xbee_at_response_t;
+        
+        typedef struct xbee_transmit_status_struct {
+            unsigned char frameID;
+            unsigned short networkAddress;
+            unsigned char transmitRetryCount;
+            unsigned char deliveryStatus;
+            unsigned char discoveryStatus;
+            volatile unsigned char isNew;
+            unsigned short varLen;
+        } PACKED xbee_transmit_status_t;
+        
+        typedef struct xbee_receive_packet_struct {
+            unsigned long long sourceAddress;
+            unsigned short networkAddress;
+            unsigned char receiveOptions;
+            unsigned char RFData[255];
+            volatile unsigned char isNew;
+            unsigned short varLen;
+        } PACKED xbee_receive_packet_t;
+
+        typedef struct xbee_transmit_request_struct {
+            unsigned char frameID;
+            unsigned long long destinationAddress;
+            unsigned short networkAddress;
+            unsigned char broadcastRadius;
+            unsigned char options;
+            unsigned char RFData[255];
+            volatile unsigned char isNew;
+            unsigned short varLen;
+        } PACKED xbee_transmit_request_t;
+        
+        typedef struct xbee_node_identification_indicator_struct {
+            unsigned long long senderSourceAddress;
+            unsigned short senderNetworkAddress;
+            unsigned char receiveOptions;
+            unsigned short remoteNetworkAddress;
+            unsigned long long remoteSourceAddress;
+            unsigned char NIString;
+            unsigned char null;
+            unsigned short parentNetworkAddress;
+            unsigned char deviceType;
+            unsigned char sourceEvent;
+            unsigned short digiProfileID;
+            unsigned short digiManufacturerID;
+            volatile unsigned char isNew;
+            unsigned short varLen;
+        } PACKED xbee_node_identification_indicator_t;
+        
+        extern xbee_modem_status_t xbee_modem_status;
+        extern xbee_at_command_t xbee_at_command;
+        extern xbee_at_response_t xbee_at_response;
+        extern xbee_transmit_status_t xbee_transmit_status;
+        extern xbee_receive_packet_t xbee_receive_packet;
+        extern xbee_transmit_request_t xbee_transmit_request;
+        extern xbee_node_identification_indicator_t xbee_node_identification_indicator;
+        
+        extern unsigned char FUNCXBeetBuf[TBUF_LEN];
+        extern volatile unsigned char FUNCXBeetBufCount;
+        unsigned int XBeetBufCompare(unsigned char * compare, unsigned int length);
+        
+        extern volatile unsigned int FUNCXBeeState;
+        extern volatile unsigned short FUNCXBeeLength, FUNCXBeeID, FUNCXBeePacket;
+        extern volatile unsigned char FUNCXBeeChecksum;
+        extern unsigned char FUNCXBeeBuffer[XBEE_BUFFER_SIZE];
+    
+        extern WEAK void XBeeMessage(unsigned char id, unsigned char * buffer, unsigned short length);
+        void XBeeInit(void);
+        
+        void XBeeCommFail(void);
+        void XBeeSetDefaults(void);
+        void XBeeFactoryReset(void);
+        void XBeeCoordinatorJoin(void);
+        void XBeeAllowJoin(void);
+        void XBeeStopJoin(void);
+        void XBeeJoin(void);
+        void XBeeSendFrame(unsigned char id, unsigned char * buffer, unsigned short length);
+        unsigned char XBeeSendATCommand(void);
+        unsigned char XBeeSendPacket(void);
+        unsigned char XBeeWriteBroadcast(unsigned char * buffer, unsigned short length);
+        unsigned char XBeeWriteCoordinator(unsigned char * buffer, unsigned short length);
+        
         static inline void XBeeReset(void) { Port0Init(PIN20); Port0SetOut(PIN20); Port0Write(PIN20, 0); }
         static inline void XBeeRelease(void) { Port0Init(PIN20); Port0SetOut(PIN20); Port0Write(PIN20, 1); }
         static inline void XBeeInhibit(void) { Port0Write(PIN17, 1); IRQDisable(USART_IRQn); }
         static inline void XBeeAllow(void) { Port0Write(PIN17, 0); IRQEnable(USART_IRQn); }
-
-        void XBeeInit(unsigned int baud);
+        static inline void XBeeStartBypass(void) { FUNCXBeeState = 0xff;}
+        static inline void XBeeStopBypass(void) { FUNCXBeeState = 0;}
+        void XBeeInit(void);
+        void XBUARTInterrupt(unsigned char UARTData);
+        
     #endif
     
 #endif

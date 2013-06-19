@@ -48,6 +48,7 @@ while samples <= maxSamples
                 subplot(3,1,1);
                 plot([sampleLast samples], [Gyro(sampleLast,:)' Gyro(samples,:)']);
 
+                
                 subplot(3,1,2);
                 plot([sampleLast samples], [Accel(sampleLast,:)' Accel(samples,:)']);
 

@@ -123,7 +123,7 @@ void Reset(void) {
 }
 
 // *** Fast trigonometry approximation functions
-float invSqrt(float x) {
+float finvSqrt(float x) {
     union {
         float f;
         int i;
@@ -159,7 +159,7 @@ float fatan2(float y, float x) {
 float fasin(float x) {
     float temp, arcsin, xabs;
     xabs = fabsf(x);
-    temp = M_PI_2 - (1.5707288f + (-0.2121144f + (0.0742610f - 0.0187293f*xabs)*xabs)*xabs)/invSqrt(1-xabs);
+    temp = M_PI_2 - (1.5707288f + (-0.2121144f + (0.0742610f - 0.0187293f*xabs)*xabs)*xabs)/finvSqrt(1-xabs);
     arcsin = copysignf(temp, x);
     return arcsin;
 }
@@ -178,6 +178,10 @@ float fsin(float x) {
 
         y = P * (y * fabsf(y) - y) + y;   // Q * y + P * y * abs(y)
     return y;
+}
+
+float fcos(float x) {
+    return fsin(x+M_PI_2);
 }
 
 // *** Random number functions
@@ -310,7 +314,7 @@ void WaitDelay(unsigned int milliseconds) {
 }
 
 #if SYSTICK_EN
-    volatile unsigned int FUNCSysTicks;
+    volatile unsigned int FUNCSysTicks, FUNCTimeout;
 
     // *** System tick timer functions
 	void SysTickInit(void) {	// this function is run automaticlly by the startup script if SysTick is enabled
@@ -338,12 +342,13 @@ void WaitDelay(unsigned int milliseconds) {
 
 	void SysTick_Handler(void) {
 		FUNCSysTicks++; // increment tick timer variable for use with Delays
+        if(FUNCTimeout>0) FUNCTimeout--;
 		if(SysTickInterrupt) SysTickInterrupt();  // Run user-supplied interrupt function if available
         if(SDTick) SDTick();
 	}
 
     // Systick-based delay
-	__attribute__ ((section(".after_vectors"))) void SysTickDelay(unsigned int milliseconds) {
+	void SysTickDelay(unsigned int milliseconds) {
 		FUNCSysTicks = 0; // zero tick timer variable
 		while(FUNCSysTicks < (milliseconds*1000)/SYSTICK_US); // wait until tick timer variable reaches required number
 	}
@@ -354,58 +359,76 @@ void WaitDelay(unsigned int milliseconds) {
 	}
 #endif
 
-/*
-// *** Watchdog timer initialise
-void WDTInit(unsigned int milliseconds, unsigned char mode) {
-    LPC_SYSCON->WDTOSCCTRL = 0x020;		// Default rate of divider of 2, clock rate of 0.5MHz
-    LPC_SYSCON->WDTCLKSEL = 0x02;		// Select the watchdog oscillator as input
-    LPC_SYSCON->WDTCLKUEN = 0x01;		// Update clock source
-    LPC_SYSCON->WDTCLKUEN = 0x00;	  
-    LPC_SYSCON->WDTCLKUEN = 0x01;	  
-    while (!(LPC_SYSCON->WDTCLKUEN & 0x01));     // Wait for update
-    LPC_SYSCON->WDTCLKDIV = 1;			// Set divider to 1
-    LPC_SYSCON->PDRUNCFG &= ~(0x1UL << 6);	// Power up the WDT oscillator
 
-    LPC_SYSCON->SYSAHBCLKCTRL |= (0x1UL << 15);		// Enable clock to WDT
+// *** Watchdog timer initialise
+void WDTInit(unsigned int milliseconds) {
+    LPC_SYSCON->SYSAHBCLKCTRL |= (0x1UL << 15);		// Enable clock to WDT block
+    LPC_SYSCON->PDRUNCFG &= ~(0x1UL << 6);	// Power up the WDT oscillator
     
-    if(mode == INTERRUPT) {
-        // in interrupt mode, enable interrupts
+    #if WDT_CLK == 0
+        LPC_SYSCON->WDTOSCCTRL = 0x020;		// Default rate of divider of 2, clock rate of 0.5MHz, WDT divides by 4 again = 62.5kHz clock
+        LPC_WWDT->CLKSEL = 0x01;		// Select the watchdog oscillator as input
+    #else
+        LPC_WWDT->CLKSEL = 0x00;		// Select IRC as input
+    #endif
+    
+    #if WDT_MODE
+        // in interrupt mode 1 and 2, enable interrupts
         IRQClear(WDT_IRQn);
         IRQEnable(WDT_IRQn);
         IRQPriority(WDT_IRQn, WDT_PRIORITY);
-        LPC_WDT->MOD = 0x1;
-    }
-    else {
+        LPC_WWDT->MOD = 0x1;
+    #else
         // in reset mode, enable reset
-        LPC_WDT->MOD = 0x3;
-    }
+        LPC_WWDT->MOD = 0x3;
+    #endif
     
     // Set up WDT period with minimum and maximum values
+    #if WDT_CLK == 0
     if(milliseconds < 1) {
-        LPC_WDT->TC = 1;
+        LPC_WWDT->TC = 1;
     }
-    else if(milliseconds > 14400000) {
-        LPC_WDT->TC = 14400000;
+    else if(milliseconds > 268435) { // maximum 268.435 seconds
+        LPC_WWDT->TC = 268435;
     }
     else {
-        LPC_WDT->TC = 83 * milliseconds;
+        LPC_WWDT->TC = 62.5 * milliseconds;
     }
+    #else
+    if(milliseconds < 1) {
+        LPC_WWDT->TC = 1;
+    }
+    else if(milliseconds > 5592) { // maximum 5.592 seconds
+        LPC_WWDT->TC = 5592;
+    }
+    else {
+        LPC_WWDT->TC = 3000 * milliseconds;
+    }
+    #endif
     
     WDTFeed(); // feed WDT
 }
 
 // *** Watchdog timer stop
 void WDTStop(void) {
-    LPC_WDT->MOD &= ~0x1;
-    LPC_SYSCON->WDTCLKDIV = 0;
+    LPC_WWDT->MOD &= ~0x1;
     IRQDisable(WDT_IRQn);
 }
 
 // *** Watchdog timer interrupt
 void WDT_IRQHandler(void) {
+    #if WHO_AM_I == I_AM_THALAMUS && RX_EN
+    RXWDTInterrupt();
+    #endif
     if(WDTInterrupt) WDTInterrupt();
+    #if WDT_MODE == 2
+        LPC_WWDT->MOD &= ~0x04;
+        LPC_WWDT->MOD = 0x1;
+        WDTFeed(); // feed WDT
+    #endif
 }
 
+/*
 // *** Clockout confiig
 void ClockOut(unsigned char mode, unsigned char divider) {
     if(mode == USBSOF) {
@@ -623,12 +646,12 @@ unsigned char ResetStatus(void) {
 // ****************************************************************************
 
 // *** Initialise pins as digital IO mode (note: default state is digital input)
-__attribute__ ((section(".after_vectors"))) void Port0Init(unsigned int pins) {
+void Port0Init(unsigned int pins) {
     unsigned int i;
     unsigned int * ptr;
     
     ptr = (unsigned int *)LPC_IOCON_BASE;
-    for(i=0x1; i>(0x1UL <<24); i<<=1) {    // Set various pins to GPIO when specified, Port 0 only goes up to pin 23
+    for(i=0x1; i<(0x1UL <<24); i<<=1) {    // Set various pins to GPIO when specified, Port 0 only goes up to pin 23
         if(pins & i) *ptr = 0x90;
         ptr++;
     }
@@ -644,7 +667,7 @@ __attribute__ ((section(".after_vectors"))) void Port0Init(unsigned int pins) {
     Port0SetIn(pins);                               // Set the specified pins as input
 }
 
-__attribute__ ((section(".after_vectors"))) void Port1Init(unsigned int pins) {
+void Port1Init(unsigned int pins) {
     unsigned int i;
     unsigned int * ptr;
     
@@ -1038,17 +1061,17 @@ void PIOINT3_IRQHandler(void) {
                 // assume 72MHz operation
                 #if UART_USE_FBR
                     switch(baud) {                          // some predefined baud rates with pre-calculated fractional baud rates
-                        /*case 110: LPC_USART->DLM = 0x92; LPC_USART->DLL = 0x7c; LPC_USART->FDR = 0xb1; break;
+                        case 110: LPC_USART->DLM = 0x92; LPC_USART->DLL = 0x7c; LPC_USART->FDR = 0xb1; break;
                         case 4800: LPC_USART->DLM = 0x03; LPC_USART->DLL = 0x6b; LPC_USART->FDR = 0xe1; break;
                         case 9600: LPC_USART->DLM = 0x01; LPC_USART->DLL = 0x77; LPC_USART->FDR = 0x41; break;
                         case 14400: LPC_USART->DLM = 0; LPC_USART->DLL = 0xfa; LPC_USART->FDR = 0x41; break;
                         case 19200: LPC_USART->DLM = 0; LPC_USART->DLL = 0x7d; LPC_USART->FDR = 0x87; break;
                         case 28800: LPC_USART->DLM = 0; LPC_USART->DLL = 0x7d; LPC_USART->FDR = 0x41; break;
                         case 38400: LPC_USART->DLM = 0; LPC_USART->DLL = 0x4a; LPC_USART->FDR = 0xc7; break;
-                        case 56000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x4b; LPC_USART->FDR = 0xe1; break;*/
+                        case 56000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x4b; LPC_USART->FDR = 0xe1; break;
                         case 57600: LPC_USART->DLM = 0; LPC_USART->DLL = 0x47; LPC_USART->FDR = 0xa1; break;
                         case 115200: LPC_USART->DLM = 0; LPC_USART->DLL = 0x17; LPC_USART->FDR = 0xa7; break;
-                        /*case 128000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x1f; LPC_USART->FDR = 0xf2; break;
+                        case 128000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x1f; LPC_USART->FDR = 0xf2; break;
                         case 153600: LPC_USART->DLM = 0; LPC_USART->DLL = 0x17; LPC_USART->FDR = 0xb3; break;
                         case 230400: LPC_USART->DLM = 0; LPC_USART->DLL = 0x10; LPC_USART->FDR = 0x92; break;
                         case 256000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x10; LPC_USART->FDR = 0xa1; break;
@@ -1057,8 +1080,9 @@ void PIOINT3_IRQHandler(void) {
                         case 1000000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x4; LPC_USART->FDR = 0x81; break;
                         case 2000000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x2; LPC_USART->FDR = 0x81; break;
                         case 3000000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x1; LPC_USART->FDR = 0x21; break;
-                        case 4000000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x1; LPC_USART->FDR = 0x81; break;*/
+                        case 4000000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x1; LPC_USART->FDR = 0x81; break;
                         default:
+                            LPC_USART->FDR = 0x10;
                             baudval = 4500000/baud;	                // baud rate
                             if(baudval > 0xffff) baudval = 0xffff;
                             else if(baudval == 0) baudval = 1;
@@ -1080,7 +1104,7 @@ void PIOINT3_IRQHandler(void) {
                 // assume 12MHz operation
                 #if UART_USE_FBR
                     switch(baud) {                          // some predefined baud rates with pre-calculated fractional baud rates
-                        /*case 110: LPC_USART->DLM = 0x18; LPC_USART->DLL = 0x6a; LPC_USART->FDR = 0xb1; break;
+                        case 110: LPC_USART->DLM = 0x18; LPC_USART->DLL = 0x6a; LPC_USART->FDR = 0xb1; break;
                         case 2400: LPC_USART->DLM = 0; LPC_USART->DLL = 0xfa; LPC_USART->FDR = 0x41; break;
                         case 4800: LPC_USART->DLM = 0; LPC_USART->DLL = 0x7d; LPC_USART->FDR = 0x41; break;
                         case 9600: LPC_USART->DLM = 0; LPC_USART->DLL = 0x47; LPC_USART->FDR = 0xa1; break;
@@ -1095,8 +1119,9 @@ void PIOINT3_IRQHandler(void) {
                         case 153600: LPC_USART->DLM = 0; LPC_USART->DLL = 0x4; LPC_USART->FDR = 0x92; break;
                         case 230400: LPC_USART->DLM = 0; LPC_USART->DLL = 0x3; LPC_USART->FDR = 0xc1; break;
                         case 256000: LPC_USART->DLM = 0; LPC_USART->DLL = 0x2; LPC_USART->FDR = 0xf7; break;
-                        case 460800: LPC_USART->DLM = 0; LPC_USART->DLL = 0x1; LPC_USART->FDR = 0x85; break;*/
+                        case 460800: LPC_USART->DLM = 0; LPC_USART->DLL = 0x1; LPC_USART->FDR = 0x85; break;
                         default:
+                            LPC_USART->FDR = 0x10;
                             baudval = 750000/baud;	                // baud rate
                             if(baudval > 0xffff) baudval = 0xffff;
                             else if(baudval == 0) baudval = 1;
@@ -1265,8 +1290,21 @@ void PIOINT3_IRQHandler(void) {
                         while(LPC_USART->LSR & 0x01) {
                             lsr = LPC_USART->LSR;
                             byte = LPC_USART->RBR;
-                            if((lsr & 0x04) && UARTParityError) UARTParityError(byte);
-                            else UARTInterrupt(byte);
+                            if(lsr & 0x04) {
+                                if(UARTParityError) UARTParityError(byte);
+                                #if WHO_AM_I == I_AM_THALAMUS && RX_EN && RX_TYPE
+                                RXUARTParityError();
+                                #endif
+                            }
+                            else {
+                                if(UARTInterrupt) UARTInterrupt(byte);
+                                #if WHO_AM_I == I_AM_THALAMUS && RX_EN
+                                RXUARTInterrupt(byte);
+                                #endif
+                                #if (WHO_AM_I == I_AM_HYPO || WHO_AM_I == I_AM_HYPX) && UART_EN && SYSTICK_EN && XBEE_EN
+                                XBUARTInterrupt(byte);
+                                #endif
+                            }
                         }
                     }
                     if(lsr & 0x9c) {
@@ -1287,8 +1325,21 @@ void PIOINT3_IRQHandler(void) {
                     while(LPC_USART->LSR & 0x01) {
                         lsr = LPC_USART->LSR;
                         byte = LPC_USART->RBR;
-                        if((lsr & 0x04) && UARTParityError) UARTParityError(byte);
-                        else UARTInterrupt(byte);
+                        if(lsr & 0x04) {
+                            if(UARTParityError) UARTParityError(byte);
+                            #if WHO_AM_I == I_AM_THALAMUS && RX_EN && RX_TYPE
+                            RXUARTParityError();
+                            #endif
+                        }
+                        else {
+                            if(UARTInterrupt) UARTInterrupt(byte);
+                            #if WHO_AM_I == I_AM_THALAMUS && RX_EN
+                            RXUARTInterrupt(byte);
+                            #endif
+                            #if (WHO_AM_I == I_AM_HYPO || WHO_AM_I == I_AM_HYPX) && UART_EN && SYSTICK_EN && XBEE_EN
+                            XBUARTInterrupt(byte);
+                            #endif
+                        }
                     }
                 }
                 break;
@@ -2052,8 +2103,15 @@ void Timer0Capture(unsigned char mode) {
         }
         else {
             LPC_CT16B0->CTCR = 0;
+            if(mode & (PWRESET | FALLING)) { // captures on falling edge, therefore resets on rising edge
+                LPC_CT16B0->CTCR = (0x1 << 4);
+            }
+            else if(mode & (PWRESET | RISING)) { // captures on rising edge, therefore resets on falling edge
+                LPC_CT16B0->CTCR = (0x1 << 4) | (0x1 << 5);
+            }
             if(mode & INTERRUPT) mode |= 0x4;
             LPC_CT16B0->CCR = mode & 0x7;
+            
         }
     
         LPC_IOCON->PIO0_2 &= ~(0x07);
@@ -2126,6 +2184,12 @@ void Timer1Capture(unsigned char mode) {
         }
         else {
             LPC_CT16B1->CTCR = 0;
+            if(mode & (PWRESET | FALLING)) { // captures on falling edge, therefore resets on rising edge
+                LPC_CT16B1->CTCR = (0x1 << 4);
+            }
+            else if(mode & (PWRESET | RISING)) { // captures on rising edge, therefore resets on falling edge
+                LPC_CT16B1->CTCR = (0x1 << 4) | (0x1 << 5);
+            }
             if(mode & INTERRUPT) mode |= 0x4;
             LPC_CT16B1->CCR = mode & 0x7;
         }
@@ -2202,6 +2266,12 @@ void Timer2Capture(unsigned char mode) {
         }
         else {
             LPC_CT32B0->CTCR = 0;
+            if(mode & (PWRESET | FALLING)) { // captures on falling edge, therefore resets on rising edge
+                LPC_CT32B0->CTCR = (0x1 << 4);
+            }
+            else if(mode & (PWRESET | RISING)) { // captures on rising edge, therefore resets on falling edge
+                LPC_CT32B0->CTCR = (0x1 << 4) | (0x1 << 5);
+            }
             if(mode & INTERRUPT) mode |= 0x4;
             LPC_CT32B0->CCR = mode & 0x7;
         }
@@ -2278,6 +2348,12 @@ void Timer3Capture(unsigned char mode) {
         }
         else {
             LPC_CT32B1->CTCR = 0;
+            if(mode & (PWRESET | FALLING)) { // captures on falling edge, therefore resets on rising edge
+                LPC_CT32B1->CTCR = (0x1 << 4);
+            }
+            else if(mode & (PWRESET | RISING)) { // captures on rising edge, therefore resets on falling edge
+                LPC_CT32B1->CTCR = (0x1 << 4) | (0x1 << 5);
+            }
             if(mode & INTERRUPT) mode |= 0x4;
             LPC_CT32B1->CCR = mode & 0x7;
         }
@@ -2287,43 +2363,47 @@ void Timer3Capture(unsigned char mode) {
     }
 }
 void CT16B0_IRQHandler(void) {
+    unsigned int interrupts = LPC_CT16B0->IR & 0x1f;
     if(Timer0Interrupt) Timer0Interrupt(LPC_CT16B0->IR & 0x1f);
-    if(LPC_CT16B0->IR & 0x1 && Timer0Interrupt0) Timer0Interrupt0();
-    if(LPC_CT16B0->IR & 0x2 && Timer0Interrupt1) Timer0Interrupt1();
-    if(LPC_CT16B0->IR & 0x4 && Timer0Interrupt2) Timer0Interrupt2();
-    if(LPC_CT16B0->IR & 0x8 && Timer0Interrupt3) Timer0Interrupt3();
-    if(LPC_CT16B0->IR & 0x10 && Timer0InterruptC) Timer0InterruptC(LPC_CT16B0->CR0);
-    LPC_CT16B0->IR = 0x1f;
+    if(interrupts & 0x1 && Timer0Interrupt0) Timer0Interrupt0();
+    if(interrupts & 0x2 && Timer0Interrupt1) Timer0Interrupt1();
+    if(interrupts & 0x4 && Timer0Interrupt2) Timer0Interrupt2();
+    if(interrupts & 0x8 && Timer0Interrupt3) Timer0Interrupt3();
+    if(interrupts & 0x10 && Timer0InterruptC) Timer0InterruptC(LPC_CT16B0->CR0);
+    LPC_CT16B0->IR = interrupts;
     __NOP(); __NOP();
 }
 void CT16B1_IRQHandler(void) {
+    unsigned int interrupts = LPC_CT16B1->IR & 0x1f;
     if(Timer1Interrupt) Timer1Interrupt(LPC_CT16B1->IR & 0x1f);
-    if(LPC_CT16B1->IR & 0x1 && Timer1Interrupt0) Timer1Interrupt0();
-    if(LPC_CT16B1->IR & 0x2 && Timer1Interrupt1) Timer1Interrupt1();
-    if(LPC_CT16B1->IR & 0x4 && Timer1Interrupt2) Timer1Interrupt2();
-    if(LPC_CT16B1->IR & 0x8 && Timer1Interrupt3) Timer1Interrupt3();
-    if(LPC_CT16B1->IR & 0x10 && Timer1InterruptC) Timer1InterruptC(LPC_CT16B1->CR0);
-    LPC_CT16B1->IR = 0x1f;
+    if(interrupts & 0x1 && Timer1Interrupt0) Timer1Interrupt0();
+    if(interrupts & 0x2 && Timer1Interrupt1) Timer1Interrupt1();
+    if(interrupts & 0x4 && Timer1Interrupt2) Timer1Interrupt2();
+    if(interrupts & 0x8 && Timer1Interrupt3) Timer1Interrupt3();
+    if(interrupts & 0x10 && Timer1InterruptC) Timer1InterruptC(LPC_CT16B1->CR0);
+    LPC_CT16B1->IR = interrupts;
     __NOP(); __NOP();
 }
 void CT32B0_IRQHandler(void) {
+    unsigned int interrupts = LPC_CT32B0->IR & 0x1f;
     if(Timer2Interrupt) Timer2Interrupt(LPC_CT32B0->IR & 0x1f);
-    if(LPC_CT32B0->IR & 0x1 && Timer2Interrupt0) Timer2Interrupt0();
-    if(LPC_CT32B0->IR & 0x2 && Timer2Interrupt1) Timer2Interrupt1();
-    if(LPC_CT32B0->IR & 0x4 && Timer2Interrupt2) Timer2Interrupt2();
-    if(LPC_CT32B0->IR & 0x8 && Timer2Interrupt3) Timer2Interrupt3();
-    if(LPC_CT32B0->IR & 0x10 && Timer2InterruptC) Timer2InterruptC(LPC_CT32B0->CR0);
-    LPC_CT32B0->IR = 0x1f;
+    if(interrupts & 0x1 && Timer2Interrupt0) Timer2Interrupt0();
+    if(interrupts & 0x2 && Timer2Interrupt1) Timer2Interrupt1();
+    if(interrupts & 0x4 && Timer2Interrupt2) Timer2Interrupt2();
+    if(interrupts & 0x8 && Timer2Interrupt3) Timer2Interrupt3();
+    if(interrupts & 0x10 && Timer2InterruptC) Timer2InterruptC(LPC_CT32B0->CR0);
+    LPC_CT32B0->IR = interrupts;
     __NOP(); __NOP();
 }
 void CT32B1_IRQHandler(void) {
-    if(Timer3Interrupt) Timer3Interrupt(LPC_CT32B1->IR & 0x1f);
-    if(LPC_CT32B1->IR & 0x1 && Timer3Interrupt0) Timer3Interrupt0();
-    if(LPC_CT32B1->IR & 0x2 && Timer3Interrupt1) Timer3Interrupt1();
-    if(LPC_CT32B1->IR & 0x4 && Timer3Interrupt2) Timer3Interrupt2();
-    if(LPC_CT32B1->IR & 0x8 && Timer3Interrupt3) Timer3Interrupt3();
-    if(LPC_CT32B1->IR & 0x10 && Timer3InterruptC) Timer3InterruptC(LPC_CT32B1->CR0);
-    LPC_CT32B1->IR = 0x1f;
+    unsigned int interrupts = LPC_CT32B1->IR & 0x1f;
+    if(Timer3Interrupt) Timer3Interrupt(interrupts);
+    if(interrupts & 0x1 && Timer3Interrupt0) Timer3Interrupt0();
+    if(interrupts & 0x2 && Timer3Interrupt1) Timer3Interrupt1();
+    if(interrupts & 0x4 && Timer3Interrupt2) Timer3Interrupt2();
+    if(interrupts & 0x8 && Timer3Interrupt3) Timer3Interrupt3();
+    if(interrupts & 0x10 && Timer3InterruptC) Timer3InterruptC(LPC_CT32B1->CR0);
+    LPC_CT32B1->IR = interrupts;
     __NOP(); __NOP();
 }
 
@@ -2410,14 +2490,14 @@ unsigned short ADCRead(unsigned char channel) {
             else if(channel & CHN7) return ((LPC_ADC->DR[7] >> 6) & 0x3FF);
             else return 0xffff;
         #else
-            if(channel & CHN0) return ((LPC_ADC->DR[0] >> 6) & 0xFFF);
-            else if(channel & CHN1) return ((LPC_ADC->DR[1] >> 6) & 0xFFF);
-            else if(channel & CHN2) return ((LPC_ADC->DR[2] >> 6) & 0xFFF);
-            else if(channel & CHN3) return ((LPC_ADC->DR[3] >> 6) & 0xFFF);
-            else if(channel & CHN4) return ((LPC_ADC->DR[4] >> 6) & 0xFFF);
-            else if(channel & CHN5) return ((LPC_ADC->DR[5] >> 6) & 0xFFF);
-            else if(channel & CHN6) return ((LPC_ADC->DR[6] >> 6) & 0xFFF);
-            else if(channel & CHN7) return ((LPC_ADC->DR[7] >> 6) & 0xFFF);
+            if(channel & CHN0) return ((LPC_ADC->DR[0] >> 4) & 0xFFF);
+            else if(channel & CHN1) return ((LPC_ADC->DR[1] >> 4) & 0xFFF);
+            else if(channel & CHN2) return ((LPC_ADC->DR[2] >> 4) & 0xFFF);
+            else if(channel & CHN3) return ((LPC_ADC->DR[3] >> 4) & 0xFFF);
+            else if(channel & CHN4) return ((LPC_ADC->DR[4] >> 4) & 0xFFF);
+            else if(channel & CHN5) return ((LPC_ADC->DR[5] >> 4) & 0xFFF);
+            else if(channel & CHN6) return ((LPC_ADC->DR[6] >> 4) & 0xFFF);
+            else if(channel & CHN7) return ((LPC_ADC->DR[7] >> 4) & 0xFFF);
             else return 0xffff;
         #endif
         
@@ -2427,7 +2507,11 @@ unsigned short ADCRead(unsigned char channel) {
         LPC_ADC->CR |= 0x1000000 | channel;      // Start now!
         
 		while(!(LPC_ADC->GDR & (0x1UL << 31)));			// Wait for ADC to complete
-		return ((LPC_ADC->GDR >> 6) & 0x3FF);       // Return the ADC value
+        #if ADC_10BIT
+            return ((LPC_ADC->GDR >> 6) & 0x3FF);       // Return the ADC value
+        #else
+            return ((LPC_ADC->GDR >> 4) & 0xFFF);       // Return the ADC value
+        #endif
 	#endif
 }
 
@@ -2677,8 +2761,7 @@ VCOM_DATA_T g_vCOM;
 unsigned char VCOM_isbridge;
 
 void CDCInit(unsigned char bridge) {
-
-USBD_API_INIT_PARAM_T usb_param;
+    USBD_API_INIT_PARAM_T usb_param;
     USBD_CDC_INIT_PARAM_T cdc_param;
     USB_CORE_DESCS_T desc;
     USBD_HANDLE_T hCdc;
@@ -3023,7 +3106,7 @@ unsigned char PRGPoll(void) {
 // *** UAir Interlink Functions
 // ****************************************************************************
 
-#if ILINK_EN
+#if ILINK_EN & SSP0_EN
     volatile unsigned char FUNCILinkState;
     volatile unsigned short FUNCILinkID, FUNCILinkChecksumA, FUNCILinkChecksumB, FUNCILinkLength, FUNCILinkPacket;
     unsigned short FUNCILinkRxBuffer[ILINK_BUFFER_SIZE];
@@ -3048,13 +3131,13 @@ unsigned char PRGPoll(void) {
         SSP0S0SEL();
         tempBufferD = SSP0Byte(0);
         SSP0S0CLR();
-
+        
         ILinkProcess(tempBufferA);
         ILinkProcess(tempBufferB);
         ILinkProcess(tempBufferC);
         ILinkProcess(tempBufferD);
     }
-
+    
     void ILinkProcess(unsigned short data) {
         switch(FUNCILinkState) {
             default: // fall through to case 0
@@ -3195,8 +3278,104 @@ unsigned char PRGPoll(void) {
     //#endif
 #endif
 
+
 #if WHO_AM_I == I_AM_THALAMUS
 
+    // ****************************************************************************
+    // *** ULTRA Functions (Thalamus only)
+    // ****************************************************************************
+    
+    volatile unsigned char FUNCUltraNewData;
+    volatile unsigned short FUNCUltraValue;
+    volatile unsigned char FUNCUltraOutOfRange;
+    volatile unsigned char FUNCUltraUnderRange;
+    volatile unsigned char FUNCUltraFastRate;
+
+     
+    unsigned char UltraInit(void) {
+        Port0SetOut(PIN7);
+        Port0Write(PIN7, 0);
+        
+        Timer1Init(71); // runs at 1us
+        Timer1Match0(10, INTERRUPT); // Pulse interrupt
+        Timer1Match1(6666, INTERRUPT); // 
+        Timer1Match3(12000, RESET | INTERRUPT); // overrun interrupt
+        Timer1Capture(FALLING | PWRESET | INTERRUPT); // step6: set capture interrupt for falling edge of echo;
+        FUNCUltraFastRate = 0;
+        return 1;
+    }
+    
+    unsigned short UltraGetData(void) {
+        if(FUNCUltraOutOfRange) return 0;
+        else return (FUNCUltraValue * 170)/1000;
+    }
+	
+	
+    unsigned short UltraGetRawData(void) {
+        if(FUNCUltraOutOfRange) return 0;
+        else return FUNCUltraValue;
+    }
+	
+	unsigned short UltraGetNewRawData(void) {
+        if(FUNCUltraNewData) {
+            FUNCUltraNewData = 0;
+			if(FUNCUltraOutOfRange) return 0;
+			else return FUNCUltraValue;
+        }
+        else return 0;
+	}
+	
+    unsigned short UltraGetNewData(void) {
+        if(FUNCUltraNewData) {
+            FUNCUltraNewData = 0;
+			if(FUNCUltraOutOfRange) return 0;
+			else return (FUNCUltraValue * 170)/1000;
+        }
+        else return 0;
+    }
+
+    void Timer1InterruptC(unsigned short timerValue) {
+        if(FUNCUltraOutOfRange) {
+            FUNCUltraOutOfRange = 0;
+        }
+        else {
+			FUNCUltraValue = timerValue;
+            FUNCUltraNewData = 1;
+            if(FUNCUltraFastRate) {
+                if(timerValue < 6500) {
+                    FUNCUltraUnderRange = 1;
+                }
+                else {
+                    FUNCUltraUnderRange = 0;
+                    Port0Write(PIN7, 1);
+                    Timer1Reset();
+                    Timer1Go();
+                }
+            }
+        }
+    }
+    void Timer1Interrupt0(void) {
+        Port0Write(PIN7, 0);
+    }
+
+    void Timer1Interrupt1(void) {
+        if(FUNCUltraUnderRange) {
+            FUNCUltraUnderRange = 0;
+            Port0Write(PIN7, 1);
+            Timer1Reset();
+            Timer1Go();
+        }
+    }
+
+    void Timer1Interrupt3(void) {
+        if(Port0Read(PIN20)) { // if signal is high, then Ultrasound timeout/out of range
+            FUNCUltraOutOfRange = 1;
+        }
+        
+        FUNCUltraUnderRange = 0;
+        Port0Write(PIN7, 1);
+    }
+    
     // ****************************************************************************
     // *** RX Functions (Thalamus)
     // ****************************************************************************
@@ -3205,23 +3384,77 @@ unsigned char PRGPoll(void) {
     volatile unsigned char FUNCRXLastByte;
     volatile unsigned char FUNCRXChannel;
     volatile unsigned char FUNCRXNewData;
+    volatile unsigned char FUNCRXStatus;
+    #if RX_TYPE == 0
     unsigned short FUNCRXChanBuffer[7];
     unsigned short FUNCRXChan[7];
+    #else
+    unsigned short FUNCRXChanBuffer[18];
+    unsigned short FUNCRXChan[18];
+    #endif
 
+    void RXUARTInit(void) {
+        IRQDisable(USART_IRQn);
+
+        // Enable the pins
+        LPC_SYSCON->SYSAHBCLKCTRL |= (0x1UL <<12);     // Enable clock to IOCON block and UART block
+        #if RX_TYPE == 0
+            LPC_IOCON->PIO0_18 = 0x11;                   // Rx
+        #else
+            LPC_IOCON->PIO0_18 = 0x49;                   // Rx
+        #endif
+
+        // Set clock settings
+        LPC_SYSCON->UARTCLKDIV = 0x01;              // Clock divider at 1
+
+        LPC_USART->LCR = 0x80;                       // enable access to divisor (clock) latches
+        if((LPC_SYSCON->MAINCLKSEL & 0x03) == 0x03) {
+            #if RX_TYPE == 0
+                LPC_USART->DLM = 0;
+                LPC_USART->DLL = 0x17;
+                LPC_USART->FDR = 0xa7;
+            #else
+                LPC_USART->DLM = 0;
+                LPC_USART->DLL = 0x15;
+                LPC_USART->FDR = 0x78;
+            #endif
+        }
+        else {
+            LPC_USART->DLM = 0;
+            LPC_USART->DLL = 0x6;
+            LPC_USART->FDR = 0xc1;
+        }
+
+        // Data format 
+        #if RX_TYPE == 0
+            LPC_USART->LCR = 0x3;
+        #else
+            LPC_USART->LCR = 0x1f;  // disable access to divisor latches, and set data format
+        #endif
+            
+        LPC_USART->IER = 0x05;
+        LPC_USART->FCR = 0x06;
+        LPC_USART->FCR = 0x01;
+        LPC_USART->SCR = LPC_USART->LSR;
+        while (LPC_USART->LSR & 0x01)   LPC_USART->SCR = LPC_USART->RBR;
+        LPC_USART->TER = 0x80;
+
+        IRQClear(USART_IRQn);
+        IRQPriority(USART_IRQn, UART_PRIORITY);
+        IRQEnable(USART_IRQn);
+    }
+    
     void RXInit(void) {
-        
         Port0Init(PIN17 | PIN18);
         Port0SetOut(PIN17 | PIN18); // PIN17 is power pin to PNP base, PIN18 is RX pin
         Port0Write(PIN17 | PIN18, 0);
         
         Delay(500);
-
-        UARTInit(115200);
-		
-		Timer1Init(71);
-		Timer1Match0(5000, INTERRUPT);
+        RXUARTInit();
+        
+		WDTInit(5);
     }
-	
+    
     void RXBind(void) {
         UARTStop();
         
@@ -3243,72 +3476,220 @@ unsigned char PRGPoll(void) {
         FUNCRXCount = 0;
         FUNCRXNewData = 0;
         
-        UARTInit(115200);
+        RXUARTInit();
     }
 
     void RXDelay(void) {
         volatile unsigned int i;
         for(i=0; i<600; i++);
     }
-
-	void Timer1Interrupt0(void) {
+	
+	void RXWDTInterrupt(void) {
 		FUNCRXCount = 0;
 	}
-	
+    
+    void RXUARTParityError(void) {
+        FUNCRXStatus = 0;
+    }
+    
     unsigned char RXProcess(unsigned char RXByte) {
-        if(FUNCRXCount == 0) {  // sync byte 1
-            if(RXByte == 0x03) FUNCRXCount++;
-        }
-        else if(FUNCRXCount == 1) { // sync byte 2
-            //if(RXByte == 0x01) FUNCRXCount++;   // Not clear what this sync byte does, we've gotten 0x01 on DX6e and DX5e, and 0x29 and 0xa2 for DX4e
-            //else FUNCRXCount = 0;
-            FUNCRXCount++;
-        }
-        else {
-            if(FUNCRXCount % 2 == 0) {   // even bytes
-                FUNCRXLastByte = RXByte;
-                FUNCRXChannel = (RXByte >> 2) & 0x7;
+        #if RX_TYPE == 0
+            switch(FUNCRXCount) {
+                case 0:
+                    if(RXByte == 0x03) FUNCRXCount++;
+                    break;
+                case 1:
+                    //if(RXByte == 0x01) FUNCRXCount++;   // Not clear what this sync byte does, we've gotten 0x01 on DX6e and DX5e, and 0x29 and 0xa2 for DX4e
+                    //else FUNCRXCount = 0;
+                    FUNCRXCount++;
+                    break;
+                default:
+                    if(FUNCRXCount % 2 == 0) {   // even bytes
+                        FUNCRXLastByte = RXByte;
+                        FUNCRXChannel = (RXByte >> 2) & 0x7;
+                    }
+                    else {  // odd bytes
+                        FUNCRXChanBuffer[FUNCRXChannel] = (FUNCRXLastByte & 0x3) << 8 | RXByte;
+                    }
+
+                    FUNCRXCount++;
+                    if(FUNCRXCount >= 16) {
+                        FUNCRXCount = 0;
+                        FUNCRXNewData = 1;
+                        FUNCRXChan[0] = FUNCRXChanBuffer[0];
+                        FUNCRXChan[1] = FUNCRXChanBuffer[1];
+                        FUNCRXChan[2] = FUNCRXChanBuffer[2];
+                        FUNCRXChan[3] = FUNCRXChanBuffer[3];
+                        FUNCRXChan[4] = FUNCRXChanBuffer[4];
+                        FUNCRXChan[5] = FUNCRXChanBuffer[5];
+                        FUNCRXChan[6] = FUNCRXChanBuffer[6];
+                        return 1;
+                    }
             }
-            else {  // odd bytes
-                FUNCRXChanBuffer[FUNCRXChannel] = (FUNCRXLastByte & 0x3) << 8 | RXByte;
+            return 0;
+        #else
+            switch(FUNCRXCount) {
+                case 0:
+                    if(RXByte == 0x0f) {
+                        FUNCRXStatus = 1;
+                        FUNCRXCount++;
+                    }
+                    break;
+                case 1:
+                    FUNCRXChanBuffer[0] = RXByte;
+                    FUNCRXCount++;
+                    break;
+                case 2:
+                    FUNCRXChanBuffer[0] |= RXByte << 8;
+                    FUNCRXChanBuffer[1] = RXByte >> 3;
+                    FUNCRXCount++;
+                    break;
+                case 3:
+                    FUNCRXChanBuffer[1] |= RXByte << 5;
+                    FUNCRXChanBuffer[2] = RXByte >> 6;
+                    FUNCRXCount++;
+                    break;
+                case 4:
+                    FUNCRXChanBuffer[2] |= RXByte << 2;
+                    FUNCRXCount++;
+                    break;
+                case 5:
+                    FUNCRXChanBuffer[2] |= RXByte << 10;
+                    FUNCRXChanBuffer[3] = RXByte >> 1;
+                    FUNCRXCount++;
+                    break;
+                case 6:
+                    FUNCRXChanBuffer[3] |= RXByte << 7;
+                    FUNCRXChanBuffer[4] = RXByte >> 4;
+                    FUNCRXCount++;
+                    break;
+                case 7:
+                    FUNCRXChanBuffer[4] |= RXByte << 4;
+                    FUNCRXChanBuffer[5] = RXByte >> 7;
+                    FUNCRXCount++;
+                    break;
+                case 8:
+                    FUNCRXChanBuffer[5] |= RXByte << 1;
+                    FUNCRXCount++;
+                    break;
+                case 9:
+                    FUNCRXChanBuffer[5] |= RXByte << 9;
+                    FUNCRXChanBuffer[6] = RXByte >> 2;
+                    FUNCRXCount++;
+                    break;
+                case 10:
+                    FUNCRXChanBuffer[6] |= RXByte << 6;
+                    FUNCRXChanBuffer[7] = RXByte >> 5;
+                    FUNCRXCount++;
+                    break;
+                case 11:
+                    FUNCRXChanBuffer[7] |= RXByte << 3;
+                    FUNCRXCount++;
+                    break;
+                case 12:
+                    FUNCRXChanBuffer[8] = RXByte;
+                    FUNCRXCount++;
+                    break;
+                case 13:
+                    FUNCRXChanBuffer[8] |= RXByte << 8;
+                    FUNCRXChanBuffer[9] = RXByte >> 3;
+                    FUNCRXCount++;
+                    break;
+                case 14:
+                    FUNCRXChanBuffer[9] |= RXByte << 5;
+                    FUNCRXChanBuffer[10] = RXByte >> 6;
+                    FUNCRXCount++;
+                    break;
+                case 15:
+                    FUNCRXChanBuffer[10] |= RXByte << 2;
+                    FUNCRXCount++;
+                    break;
+                case 16:
+                    FUNCRXChanBuffer[10] |= RXByte << 10;
+                    FUNCRXChanBuffer[11] = RXByte >> 1;
+                    FUNCRXCount++;
+                    break;
+                case 17:
+                    FUNCRXChanBuffer[11] |= RXByte << 7;
+                    FUNCRXChanBuffer[12] = RXByte >> 4;
+                    FUNCRXCount++;
+                    break;
+                case 18:
+                    FUNCRXChanBuffer[12] |= RXByte << 4;
+                    FUNCRXChanBuffer[13] = RXByte >> 7;
+                    FUNCRXCount++;
+                    break;
+                case 19:
+                    FUNCRXChanBuffer[13] |= RXByte << 1;
+                    FUNCRXCount++;
+                    break;
+                case 20:
+                    FUNCRXChanBuffer[13] |= RXByte << 9;
+                    FUNCRXChanBuffer[14] = RXByte >> 2;
+                    FUNCRXCount++;
+                    break;
+                case 21:
+                    FUNCRXChanBuffer[14] |= RXByte << 6;
+                    FUNCRXChanBuffer[15] = RXByte >> 5;
+                    FUNCRXCount++;
+                    break;
+                case 22:
+                    FUNCRXChanBuffer[15] |= RXByte << 3;
+                    FUNCRXCount++;
+                    break;
+                case 23:
+                    FUNCRXChanBuffer[16] = RXByte;
+                    FUNCRXChanBuffer[17] = RXByte >> 1;
+                    if(!(RXByte & 0x0C)) {
+                        FUNCRXStatus = 2;
+                    }
+                    FUNCRXCount++;
+                    break;
+                case 24:
+                    if(RXByte == 0x00 && FUNCRXStatus == 2) {
+                        unsigned int i;
+                        FUNCRXNewData = 1;
+                        for(i=0; i<16; i++) FUNCRXChan[i] = FUNCRXChanBuffer[i] & 0x7ff;
+                        FUNCRXChan[16] = FUNCRXChanBuffer[16] & 0x1;
+                        FUNCRXChan[17] = FUNCRXChanBuffer[17] & 0x1;
+                    }
+                    FUNCRXCount = 0;
+                    break;
+                default:
+                    FUNCRXCount = 0;
+                    break;
             }
-            
-            FUNCRXCount++;
-            if(FUNCRXCount >= 16) {
-                FUNCRXCount = 0;
-				FUNCRXNewData = 1;
-				FUNCRXChan[0] = FUNCRXChanBuffer[0];
-				FUNCRXChan[1] = FUNCRXChanBuffer[1];
-				FUNCRXChan[2] = FUNCRXChanBuffer[2];
-				FUNCRXChan[3] = FUNCRXChanBuffer[3];
-				FUNCRXChan[4] = FUNCRXChanBuffer[4];
-				FUNCRXChan[5] = FUNCRXChanBuffer[5];
-				FUNCRXChan[6] = FUNCRXChanBuffer[6];
-                return 1;
-            }
-        }
-        return 0;
+            return 0;
+        #endif
     }
 
     unsigned char RXGetData(unsigned short * RXChannels) {
+        unsigned int i;
+        
         if(FUNCRXNewData) {
-            RXChannels[0] = FUNCRXChan[0];
-            RXChannels[1] = FUNCRXChan[1];
-            RXChannels[2] = FUNCRXChan[2];
-            RXChannels[3] = FUNCRXChan[3];
-            RXChannels[4] = FUNCRXChan[4];
-            RXChannels[5] = FUNCRXChan[5];
-            RXChannels[6] = FUNCRXChan[6];
+            #if RX_TYPE == 0
+            for(i=0; i<7; i++) RXChannels[i] = FUNCRXChan[i];
+            #else
+            for(i=0; i<16; i++) RXChannels[i] = FUNCRXChan[i];
+            RXChannels[16] = FUNCRXChan[16];
+            RXChannels[17] = FUNCRXChan[17];
+            #endif
             FUNCRXNewData = 0;
             return 1;
         }
         else return 0;
     }
 
-    void UARTInterrupt(unsigned char UARTData){
-        RXProcess(UARTData);
-		Timer1Reset();
-		Timer1Go();
+    void RXUARTInterrupt(unsigned char UARTData){
+        #if RX_TYPE == 0
+            RXProcess(UARTData);
+        #else
+            unsigned int out;
+            __asm volatile ("rev %0, %1" : "=r" (out) : "r" (UARTData) );
+            __asm volatile ("rbit %0, %1" : "=r" (out) : "r" (out) );
+            RXProcess(UARTData & 0xff);
+        #endif
+		WDTFeed();
     }
 
 
@@ -3355,9 +3736,9 @@ unsigned char PRGPoll(void) {
 		FUNCPWMX_duty = PWM_DEFAULT_X;
 		FUNCPWMY_duty = PWM_DEFAULT_Y;
         
-        if(channels & PWM_N) {  Timer3Match3(PWM_DEFAULT_N, OUTPUTLOW);  }
+        if(channels & PWM_S) {  Timer3Match3(PWM_DEFAULT_S, OUTPUTLOW);  }
         if(channels & PWM_E) {  Timer3Match1(PWM_DEFAULT_E, OUTPUTLOW);  }
-        if(channels & PWM_S) {  Timer3Match0(PWM_DEFAULT_S, OUTPUTLOW);  }
+        if(channels & PWM_N) {  Timer3Match0(PWM_DEFAULT_N, OUTPUTLOW);  }
         if(channels & PWM_W) {  Timer3Match2(PWM_DEFAULT_W, OUTPUTLOW);  }
         if(channels & PWM_X) {  Timer2Match3(PWM_DEFAULT_X, OUTPUTLOW);  }
         if(channels & PWM_Y) {  Timer2Match1(PWM_DEFAULT_Y, OUTPUTLOW);  }
@@ -3366,9 +3747,9 @@ unsigned char PRGPoll(void) {
     }
 
     void Timer2Interrupt0() {
-		Timer3SetMatch3(FUNCPWMN_duty);
+		Timer3SetMatch3(FUNCPWMS_duty);
 		Timer3SetMatch1(FUNCPWME_duty);
-		Timer3SetMatch0(FUNCPWMS_duty);
+		Timer3SetMatch0(FUNCPWMN_duty);
 		Timer3SetMatch2(FUNCPWMW_duty);
 		
         if(FUNCPWMPostscale++ > PWM_NESWFREQ/PWM_XYFREQ) {
@@ -3392,7 +3773,7 @@ unsigned char PRGPoll(void) {
 
     void SensorInit(void) {
         unsigned char I2CBuffer[5];
-
+        
         I2CInit(400);
         // *** Accelerometer
         I2CBuffer[0] = ACCEL_ADDR;
@@ -3438,6 +3819,22 @@ unsigned char PRGPoll(void) {
         I2CBuffer[3] = (MAGNETO_GAIN & 0x7) << 5; // Configuration Register B
         I2CBuffer[4] = MAGNETO_MODE & 0x3; // Mode Register
         I2CMaster(I2CBuffer, 5, 0, 0);
+        
+        // *** Barometer
+        I2CBuffer[0] = BARO_ADDR;
+        I2CBuffer[1] = 0x10;     // Pressure resolution mode
+        I2CBuffer[2] = ((BARO_TEMP_AVERAGING & 0x7) << 4) | (BARO_PRES_AVERAGING & 0xf); // oversampling settings
+        I2CMaster(I2CBuffer, 3, 0, 0);
+
+        I2CBuffer[0] = BARO_ADDR;
+        I2CBuffer[1] = 0x20;
+        I2CBuffer[2] = ((BARO_RATE & 0x7) << 4) | 0x04; // Output data rate, and block data update
+        I2CMaster(I2CBuffer, 3, 0, 0);
+        
+        I2CBuffer[0] = BARO_ADDR;
+        I2CBuffer[1] = 0x20 + 0x80;    // Ctrl register start location
+        I2CBuffer[2] = 0x80 | ((BARO_RATE & 0x7) << 4) | 0x04; // Power on on separate operation
+        I2CMaster(I2CBuffer, 3, 0, 0);
     }
 
     unsigned char GetAccel(signed short * data) {
@@ -3492,20 +3889,7 @@ unsigned char PRGPoll(void) {
         }
         else return 0;
     }
-
-    signed short GetTemp(void) {
-        unsigned char I2CBuffer[3];
-        char temp;
-        
-        I2CBuffer[0] = GYRO_ADDR;
-        I2CBuffer[1] = 0x26 + 0x80;    // Temperature data
-        I2CBuffer[2] = GYRO_ADDR | 1;
-        I2CMaster(I2CBuffer, 2, I2CBuffer, 1);
-        
-        temp = I2CBuffer[0];
-        return (signed short) temp;
-    }
-
+    
     unsigned char GetMagneto(signed short * data) {
         unsigned char I2CBuffer[6];
         unsigned char * ptr; // mess with pointers to shoehorn chars into signed short array
@@ -3539,7 +3923,6 @@ unsigned char PRGPoll(void) {
             if(length > 0) {
         #endif
         
-
         I2CBuffer[0] = MAGNETO_ADDR;
         I2CBuffer[1] = 0x03;    // data Register start
         I2CBuffer[2] = MAGNETO_ADDR | 1;
@@ -3547,13 +3930,12 @@ unsigned char PRGPoll(void) {
             ptr[0] = I2CBuffer[1]; // Seraphim X LSB 
             ptr[1] = I2CBuffer[0]; // Seraphim X MSB
             
-            ptr[2] = I2CBuffer[5]; // Seraphim Y LSB
-            ptr[3] = I2CBuffer[4]; // Seraphim Y MSB
+            ptr[2] = I2CBuffer[3]; // Seraphim Y LSB
+            ptr[3] = I2CBuffer[2]; // Seraphim Y MSB
             
-            ptr[4] = I2CBuffer[3]; // Seraphim Z LSB
-            ptr[5] = I2CBuffer[2]; // Seraphim Z MSB
-        
-            data[2] = -data[2];
+            ptr[4] = I2CBuffer[5]; // Seraphim Z LSB
+            ptr[5] = I2CBuffer[4]; // Seraphim Z MSB
+            
             return 1;
         }
         else return 0;
@@ -3563,7 +3945,52 @@ unsigned char PRGPoll(void) {
             return 0;
         #endif
     }
-
+    
+    unsigned int GetBaro(void) {
+        unsigned char I2CBuffer[5];
+        I2CBuffer[0] = BARO_ADDR;
+        I2CBuffer[1] = 0x28 + 0x80;    // Temperature data
+        I2CBuffer[2] = BARO_ADDR | 1;
+        if(I2CMaster(I2CBuffer, 2, I2CBuffer, 3)) {
+            return (unsigned int) ((I2CBuffer[2] << 16) | (I2CBuffer[1] << 8) | I2CBuffer[0]);
+        }
+        else return 0;
+    }
+    
+    float GetBaroPressure(void) { // in Pa
+        unsigned int reading;
+        reading = GetBaro();
+        if(((reading & 0x800000) == 1) | (reading == 0)) return 0; // bit numer 24 is the sign bit, shouldn't be 1 (signifying negative value) because we're not using delta pressure
+        else return (float)reading/40.96f;
+    }
+    
+    float GetBaroAlt(void) { // in mm
+        unsigned int reading;
+        float pressure;
+        
+        reading = GetBaro();
+        
+        if(((reading & 0x800000) == 1) | (reading == 0)) return 0; // bit numer 24 is the sign bit, shouldn't be 1 (signifying negative value) because we're not using delta pressure
+        else {
+            pressure = (float)reading/40.96f;
+            return ((float)101325 - pressure) * 83.2546913138f; // max error around 25m, linearise around sea level
+        }
+    }
+    
+    float GetBaroTemp(void) { // in degrees C
+        unsigned char I2CBuffer[5];
+        signed short reading;
+        
+        I2CBuffer[0] = BARO_ADDR;
+        I2CBuffer[1] = 0x2B + 0x80;    // Temperature data
+        I2CBuffer[2] = BARO_ADDR | 1;
+        I2CMaster(I2CBuffer, 2, I2CBuffer, 2);
+        
+        reading = (signed short) ((I2CBuffer[1] << 8) | I2CBuffer[0]);
+        
+        return (float)42.5 + (float)reading/(float)480;
+    }
+    
     void SensorSleep(void) {
         // Magneto sleep
         unsigned char I2CBuffer[3];
@@ -3581,6 +4008,11 @@ unsigned char PRGPoll(void) {
         I2CBuffer[0] = MAGNETO_ADDR;
         I2CBuffer[1] = 0x02;    // Mode Register
         I2CBuffer[2] = 0x02;    // Idle mode
+        I2CMaster(I2CBuffer, 3, 0, 0);
+        
+        I2CBuffer[0] = BARO_ADDR;
+        I2CBuffer[1] = 0x20;    // CTRL_REG1
+        I2CBuffer[2] = 0x00;    // Power down
         I2CMaster(I2CBuffer, 3, 0, 0);
     }
 
@@ -3900,7 +4332,7 @@ unsigned char PRGPoll(void) {
                 
                 I2CMaster(UBX_POLL, 17, 0, 0);
             }
-        
+            
             void GPSFetchData(void) {
                 unsigned char data[GPS_BUFFER_SIZE], character;
                 unsigned short length=0, request, i;
@@ -4408,15 +4840,517 @@ unsigned char PRGPoll(void) {
     // *** XBee Functions
     // ****************************************************************************
     
-    #if UART_EN
-        void XBeeInit(unsigned int baud) {
-            UARTInit(baud);
+    #if UART_EN && SYSTICK_EN && XBEE_EN
+        unsigned char FUNCXBeetBuf[TBUF_LEN];
+        volatile unsigned char FUNCXBeetBufCount;
+        
+        volatile unsigned int FUNCXBeeState;
+        volatile unsigned short FUNCXBeeLength, FUNCXBeeID, FUNCXBeePacket;
+        volatile unsigned char FUNCXBeeChecksum;
+        unsigned char FUNCXBeeBuffer[XBEE_BUFFER_SIZE];
+        
+        unsigned char XBeeSendATCommand(void) {
+            xbee_at_command.frameID = Random() | 0x1;
+            XBeeSendFrame(ID_XBEE_ATCOMMAND, (unsigned char *)&xbee_at_command, sizeof(xbee_at_command)-2-16+xbee_at_command.varLen);
+
+            // check status
+            xbee_at_response.isNew = 0;
+            FUNCTimeout = 1000;
+            while(FUNCTimeout > 0 && xbee_at_response.isNew == 0);
+            if(xbee_at_response.frameID == xbee_at_command.frameID && xbee_at_response.commandStatus == 0) {
+                return 1;
+            }
+            return 0;
+        }
+        
+        unsigned char XBeeWriteBroadcast(unsigned char * buffer, unsigned short length) {
+            unsigned int i;
+            for(i=0; i<length; i++) {
+                xbee_transmit_request.RFData[i] = buffer[i];
+            }
+            xbee_transmit_request.varLen = length;
+            xbee_transmit_request.destinationAddress = 0xffff000000000000ULL; //broadcast (big-endian)
+            xbee_transmit_request.networkAddress = 0xfeff;
+            XBeeSendPacket();
+            return 1;
+        }
+        
+        unsigned char XBeeWriteCoordinator(unsigned char * buffer, unsigned short length) {
+            unsigned int i;
+            for(i=0; i<length; i++) {
+                xbee_transmit_request.RFData[i] = buffer[i];
+            }
+            xbee_transmit_request.varLen = length;
+            xbee_transmit_request.destinationAddress = 0x0000000000000000ULL; //to coordinator (big-endian)
+            xbee_transmit_request.networkAddress = 0xfeff;
+            XBeeSendPacket();
+            return 1;
+        }
+        
+        unsigned char XBeeSendPacket(void) {
+            xbee_transmit_request.frameID = Random() | 0x01;
+            xbee_transmit_request.broadcastRadius = 0;
+            xbee_transmit_request.options = 0x01; // disable ACK;
+
+            XBeeSendFrame(ID_XBEE_TRANSMITREQUEST, (unsigned char *)&xbee_transmit_request, sizeof(xbee_transmit_request)-2-255+xbee_transmit_request.varLen);
+
+            return 1;
+        }
+
+        void XBeeAllowJoin() {
+            XBeeStopJoin();
+            
+            // set NJ
+            xbee_at_command.frameID = Random() | 0x1;
+            xbee_at_command.ATCommand1 = 'N';
+            xbee_at_command.ATCommand2 = 'J';
+            xbee_at_command.parameterValue[0] = XBEE_JOINPERIOD;
+            xbee_at_command.varLen = 1;
+            XBeeSendATCommand();
+        }
+        
+        void XBeeStopJoin() {
+            // set NJ
+            xbee_at_command.ATCommand1 = 'N';
+            xbee_at_command.ATCommand2 = 'J';
+            xbee_at_command.parameterValue[0] = 0x00;
+            xbee_at_command.varLen = 1;
+            XBeeSendATCommand();
+        }
+
+        
+        void XBeeJoin() {
+            xbee_at_response.isNew = 0;
+            
+            // NR to network reset
+            xbee_at_command.ATCommand1 = 'N';
+            xbee_at_command.ATCommand2 = 'R';
+            xbee_at_command.varLen = 0;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+
+            // NJ0 to prevent others joining
+            XBeeStopJoin();
+            
+            // PL# to set power level
+            xbee_at_command.ATCommand1 = 'P';
+            xbee_at_command.ATCommand2 = 'L';
+            xbee_at_command.parameterValue[0] = XBEE_POWER_LEVEL;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // JN1 to enable join notification
+            xbee_at_command.ATCommand1 = 'J';
+            xbee_at_command.ATCommand2 = 'N';
+            xbee_at_command.parameterValue[0] = 1;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // CE0 to disable coordinator mode
+            xbee_at_command.ATCommand1 = 'C';
+            xbee_at_command.ATCommand2 = 'E';
+            xbee_at_command.parameterValue[0] = 0;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // ID0 to set PAN ID to 0 (autofind network)
+            xbee_at_command.ATCommand1 = 'I';
+            xbee_at_command.ATCommand2 = 'D';
+            xbee_at_command.parameterValue[0] = 0;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // EE1 for encryption enable
+            xbee_at_command.ATCommand1 = 'E';
+            xbee_at_command.ATCommand2 = 'E';
+            xbee_at_command.parameterValue[0] = 1;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // D6 to enable RTS flow control
+            xbee_at_command.ATCommand1 = 'D';
+            xbee_at_command.ATCommand2 = '6';
+            xbee_at_command.parameterValue[0] = 1;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // KY### to set link key
+            xbee_at_command.ATCommand1 = 'K';
+            xbee_at_command.ATCommand2 = 'Y';
+            xbee_at_command.parameterValue[0] = 'U';
+            xbee_at_command.parameterValue[1] = 'N';
+            xbee_at_command.parameterValue[2] = 'I';
+            xbee_at_command.parameterValue[3] = 'V';
+            xbee_at_command.parameterValue[4] = 'E';
+            xbee_at_command.parameterValue[5] = 'R';
+            xbee_at_command.parameterValue[6] = 'S';
+            xbee_at_command.parameterValue[7] = 'A';
+            xbee_at_command.parameterValue[8] = 'L';
+            xbee_at_command.parameterValue[9] = '_';
+            xbee_at_command.parameterValue[10] = 'A';
+            xbee_at_command.parameterValue[11] = 'I';
+            xbee_at_command.parameterValue[12] = 'R';
+            xbee_at_command.parameterValue[13] = '1';
+            xbee_at_command.parameterValue[14] = '2';
+            xbee_at_command.parameterValue[15] = '3';
+            xbee_at_command.varLen = 16;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // AC to apply
+            xbee_at_command.ATCommand1 = 'A';
+            xbee_at_command.ATCommand2 = 'C';
+            xbee_at_command.varLen = 0;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            while(1) {
+                Delay(100);
+                
+                // AI0 to get association information
+                xbee_at_command.frameID = Random() | 0x1;
+                xbee_at_command.ATCommand1 = 'A';
+                xbee_at_command.ATCommand2 = 'I';
+                xbee_at_command.varLen = 0;
+                //if(!XBeeSendATCommand()) XBeeCommFail();
+                if(!XBeeSendATCommand()) Delay(1000);
+                if(xbee_at_response.commandData[0] == 0) break;
+            }
+            
+            // WR to write changes
+            xbee_at_command.ATCommand1 = 'W';
+            xbee_at_command.ATCommand2 = 'R';
+            xbee_at_command.varLen = 0;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+        }
+
+        
+        void XBeeCoordinatorJoin() {
+            xbee_at_response.isNew = 0;
+            
+            // NR to network reset
+            xbee_at_command.ATCommand1 = 'N';
+            xbee_at_command.ATCommand2 = 'R';
+            xbee_at_command.varLen = 0;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // set Powerlevel
+            xbee_at_command.ATCommand1 = 'P';
+            xbee_at_command.ATCommand2 = 'L';
+            xbee_at_command.parameterValue[0] = XBEE_POWER_LEVEL;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // set CE mode
+            xbee_at_command.ATCommand1 = 'C';
+            xbee_at_command.ATCommand2 = 'E';
+            xbee_at_command.parameterValue[0] = 1;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // set PAN ID
+            xbee_at_command.ATCommand1 = 'I';
+            xbee_at_command.ATCommand2 = 'D';
+            xbee_at_command.parameterValue[0] = 0;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // encryption enable
+            xbee_at_command.ATCommand1 = 'E';
+            xbee_at_command.ATCommand2 = 'E';
+            xbee_at_command.parameterValue[0] = 1;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+
+            // encryption options
+            xbee_at_command.ATCommand1 = 'E';
+            xbee_at_command.ATCommand2 = 'O';
+            xbee_at_command.parameterValue[0] = 0x02;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // set network key to zero
+            xbee_at_command.ATCommand1 = 'N';
+            xbee_at_command.ATCommand2 = 'K';
+            xbee_at_command.parameterValue[0] = 0;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // set link key
+            xbee_at_command.ATCommand1 = 'K';
+            xbee_at_command.ATCommand2 = 'Y';
+            xbee_at_command.parameterValue[0] = 'U';
+            xbee_at_command.parameterValue[1] = 'N';
+            xbee_at_command.parameterValue[2] = 'I';
+            xbee_at_command.parameterValue[3] = 'V';
+            xbee_at_command.parameterValue[4] = 'E';
+            xbee_at_command.parameterValue[5] = 'R';
+            xbee_at_command.parameterValue[6] = 'S';
+            xbee_at_command.parameterValue[7] = 'A';
+            xbee_at_command.parameterValue[8] = 'L';
+            xbee_at_command.parameterValue[9] = '_';
+            xbee_at_command.parameterValue[10] = 'A';
+            xbee_at_command.parameterValue[11] = 'I';
+            xbee_at_command.parameterValue[12] = 'R';
+            xbee_at_command.parameterValue[13] = '1';
+            xbee_at_command.parameterValue[14] = '2';
+            xbee_at_command.parameterValue[15] = '3';
+            xbee_at_command.varLen = 16;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // set NJ
+            xbee_at_command.ATCommand1 = 'N';
+            xbee_at_command.ATCommand2 = 'J';
+            xbee_at_command.parameterValue[0] = 0x00;
+            xbee_at_command.varLen = 1;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            // WR to write changes
+            xbee_at_command.ATCommand1 = 'W';
+            xbee_at_command.ATCommand2 = 'R';
+            xbee_at_command.varLen = 0;
+            if(!XBeeSendATCommand()) XBeeCommFail();
+            
+            while(1) {
+                Delay(100);
+                
+                // AI0 to get association information
+                xbee_at_command.frameID = Random() | 0x1;
+                xbee_at_command.ATCommand1 = 'A';
+                xbee_at_command.ATCommand2 = 'I';
+                xbee_at_command.varLen = 0;
+                if(XBeeSendATCommand()) break;
+            }
+            
+            XBeeAllowJoin();
+        }
+
+        void XBeeSendFrame(unsigned char id, unsigned char * buffer, unsigned short length) {
+            unsigned int i;
+            unsigned char chksum;
+            
+            UARTWriteByte(0x7E);            // Start byte
+            UARTWriteByte(length >> 8);     // length MSB
+            UARTWriteByte(length & 0xff);   // length LSB
+            UARTWriteByte(id);
+            chksum = id;
+            
+            for(i=0; i<length-1; i++) {
+                UARTWriteByte(buffer[i]);
+                chksum += buffer[i];
+            }
+            UARTWriteByte(0xff - chksum);
+        }
+
+        void XBeeSetDefaults(void) {
+            unsigned char changes = 0;
+            // Try to enter AT mode at 115200 baud
+            FUNCXBeetBufCount = 0;
+            FUNCTimeout = 1000;
+            UARTWrite((unsigned char *)"+++", 3);
+            while(FUNCTimeout > 0 && FUNCXBeetBufCount < 3); // wait for 1 second or until 3 characters received: "OK\r"a
+            
+            if(XBeetBufCompare((unsigned char *)"OK\r", 3) == 0) {
+                // if timed out or didn't receive OK, maybe we're at the wrong baud?
+                // Try to enter AT mode at 9600 baud
+                UARTInit(9600);
+                Delay(100);
+                
+                FUNCXBeetBufCount = 0;
+                FUNCTimeout = 1000;
+                UARTWrite((unsigned char *)"+++", 3);
+                while(FUNCTimeout > 0 && FUNCXBeetBufCount < 3); // wait for 1 second or until 3 characters received: "OK\r"a
+                
+                if(XBeetBufCompare((unsigned char *)"OK\r", 3) == 0) {
+                    // If timed out or did not receive OK, don't know what to do, fail.
+                    XBeeCommFail();
+                }
+                
+                // assuming successfully entered AT mode at 9600 baud, set baud rate to 115200 for next time
+                FUNCXBeetBufCount = 0;
+                FUNCTimeout = 1000;
+                UARTWrite((unsigned char *)"ATBD7\r", 6);
+                while(FUNCTimeout > 0 && FUNCXBeetBufCount < 3); // wait for 1 second or until 3 characters received: "OK\r"a
+                if(XBeetBufCompare((unsigned char *)"OK\r", 3) == 0) {
+                    // If timed out or didn't receive OK, don't know what to do, fail.
+                    XBeeCommFail();
+                }
+                changes+=10;
+            }
+            
+            // assuming successfully entered AT mode, procede to check settings
+            // Check API mode
+            FUNCXBeetBufCount = 0;
+            FUNCTimeout = 1000;
+            UARTWrite((unsigned char *)"ATAP\r", 5);
+            while(FUNCTimeout > 0 && FUNCXBeetBufCount < 2); // wait for 1 second or until 1 characters received
+            if(XBeetBufCompare((unsigned char *)"1\r", 2) == 0) {
+                // if API mode was not already on, set it
+                FUNCXBeetBufCount = 0;
+                FUNCTimeout = 1000;
+                UARTWrite((unsigned char *)"ATAP1\r", 6);
+                while(FUNCTimeout > 0 && FUNCXBeetBufCount < 3); // wait for 1 second or until 3 characters received: "OK\r"a
+                if(XBeetBufCompare((unsigned char *)"OK\r", 3) == 0) {
+                    // If timed out or didn't receive OK, don't know what to do, fail.
+                    XBeeCommFail();
+                }
+                changes++;
+            }
+            
+            // If any changes, write them
+            if(changes > 0) {
+                FUNCXBeetBufCount = 0;
+                FUNCTimeout = 3000;
+                UARTWrite((unsigned char *)"ATWR\r", 5);
+                while(FUNCTimeout < 0 && FUNCXBeetBufCount < 3); // wait for 4 second or until 3 characters received: "OK\r"a
+                if(XBeetBufCompare((unsigned char *)"OK\r", 3) == 0) {
+                    // If timed out or didn't receive OK, don't know what to do, fail.
+                    //XBeeCommFail();
+                    // For some reason this isn't always detected, disable this catch for now
+                }
+            }
+            
+            // Close ATCN mode
+            UARTWrite((unsigned char *)"ATCN\r", 5);
+            
+            if(changes > 10) {
+                // this signifies that the UART baud was changed, switch baud back up
+                Delay(100); // either a delay or wait for UART FIFO to clear
+                UARTInit(115200);
+            }
+        }
+
+        
+        void XBeeFactoryReset(void) {
+        
+            //Xbee can be factory reset by restarting XBee with TX held low (BREAK signal), afterwards it'll be on 9600 baud
+            UARTInit(9600);
+            Port0Init(PIN19);
+            Port0SetOut(PIN19);
+            Port0Write(PIN19, 0);
+            
+            XBeeReset();
+            Delay(50);
+            
+            FUNCXBeetBufCount = 0;
+            FUNCTimeout = 1000;
+            XBeeRelease();
+            while(FUNCTimeout > 0 && FUNCXBeetBufCount < 3); // wait for 1 second or until 3 characters received: "OK\r"a
+
+            Delay(100);
+            if(XBeetBufCompare((unsigned char *)"OK\r", 3) == 0) return;
+            
+            UARTInit(9600);
+            
+            // issue restore defaults command
+            FUNCXBeetBufCount = 0;
+            FUNCTimeout = 1000;
+            UARTWrite((unsigned char *)"ATRE\r", 5);
+            while(FUNCTimeout > 0 && FUNCXBeetBufCount < 3); // wait for 1 second or until 3 characters received: "OK\r"a
+            
+            if(XBeetBufCompare((unsigned char *)"OK\r", 3) == 0) return;
+            
+            // issue save settings command
+            FUNCXBeetBufCount = 0;
+            FUNCTimeout = 3000;
+            UARTWrite((unsigned char *)"ATWR\r", 5);
+            while(FUNCTimeout > 0 && FUNCXBeetBufCount < 3); // wait for 3 second or until 3 characters received: "OK\r"a
+            
+            if(XBeetBufCompare((unsigned char *)"OK\r", 3) == 0) return;
+            
+            // now restart
+            FUNCXBeetBufCount = 0;
+            FUNCTimeout = 1000;
+            UARTWrite((unsigned char *)"ATFR\r", 5);
+            while(FUNCTimeout > 0 && FUNCXBeetBufCount < 3); // wait for 1 second or until 3 characters received: "OK\r"a
+            
+            if(XBeetBufCompare((unsigned char *)"OK\r", 3) == 0) return;
+        
+        }
+        
+        void XBeeCommFail() {
+            while(1);
+        }
+
+        unsigned int XBeetBufCompare(unsigned char * compare, unsigned int length) {
+            unsigned int i;
+            if(FUNCXBeetBufCount < length) return 0;
+            for(i=0; i<length; i++) {
+                if(compare[i] != FUNCXBeetBuf[FUNCXBeetBufCount-length+i]) return 0;
+            }
+            return 1;
+        }
+
+        void XBeeInit(void) {
+            FUNCXBeeState = 0;
+            UARTInit(115200);
+            FUNCXBeetBufCount = 0;
             
             Port0Init(PIN20 | PIN17);
             Port0SetOut(PIN20 | PIN17);
             
+            XBeeReset();
+            Delay(50);
+            
             XBeeRelease();
             XBeeAllow();
+            
+            // Start timeout and wait to see if XBee is already configured (should receive modem_status API frame)
+            FUNCTimeout = 1000;
+            xbee_modem_status.isNew = 0;
+            while(FUNCTimeout > 0 && xbee_modem_status.isNew == 0);
+            
+            if(xbee_modem_status.isNew == 0) {
+                XBeeSetDefaults();
+            }
+        }
+        
+        
+        void XBUARTInterrupt(unsigned char byte) {
+            // insert into buffer
+            if(FUNCXBeetBufCount < TBUF_LEN) FUNCXBeetBuf[FUNCXBeetBufCount++] = byte;
+            
+            switch(FUNCXBeeState) {
+                default: // fall through to 0
+                case 0: // find start character 0x7e
+                    if(byte == 0x7e) FUNCXBeeState++;
+                    break;
+                case 1: // length MSB
+                    FUNCXBeeLength = byte << 8;
+                    FUNCXBeeState++;
+                    break;
+                case 2: // length LSB
+                    FUNCXBeeLength |= byte;
+                    if(FUNCXBeeLength > 1) FUNCXBeeState++;
+                    else FUNCXBeeState = 0;
+                    FUNCXBeePacket = 0;
+                    FUNCXBeeChecksum = 0;
+                    break;
+                case 3: // cmd frame
+                    FUNCXBeeID = byte;
+                    FUNCXBeeLength--; // length value includes ID, we need length in terms of payload size
+                    FUNCXBeeState++;
+                    FUNCXBeeChecksum += byte;
+                    break;
+                case 4: // cmd data
+                    if(FUNCXBeePacket < XBEE_BUFFER_SIZE) {
+                        FUNCXBeeBuffer[FUNCXBeePacket] = byte;
+                    }
+                    FUNCXBeePacket++;
+                    
+                    if(FUNCXBeePacket >= FUNCXBeeLength) FUNCXBeeState++;
+                    
+                    FUNCXBeeChecksum += byte;
+                    break;
+                case 5: // checksum
+                    if(0xff - FUNCXBeeChecksum == byte) {
+                        if(XBeeMessage) XBeeMessage(FUNCXBeeID, FUNCXBeeBuffer, FUNCXBeeLength);
+                    }
+                    else {
+                    }
+                    FUNCXBeeState = 0;
+                    break;
+                case 0xff: // bypass mode
+                    if(XBeeMessage) XBeeMessage(0, &byte, 1);
+                    break;
+            }
         }
     #endif
     

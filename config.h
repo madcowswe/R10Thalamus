@@ -51,11 +51,11 @@
 #define SYSTICK_EN          1           // Set to 1 to enable SysTick (set to 0 to disable and save some RAM)
 #define SYSTICK_STARTUP     1           // Set to 1 to enable SysTick timer during startup
 #define SYSTICK_US          1000        // SysTick period in microseconds (maximum: 233016us at 72MHz, 1398101us at 12MHz)
-#define SYSTICK_PRIORITY    0           // SysTick interrupt priority
+#define SYSTICK_PRIORITY    1           // SysTick interrupt priority
 
-/*
-#define WDT_PRIORITY        0           // WDT interrupt priority
-*/
+#define WDT_PRIORITY        1           // WDT interrupt priority
+#define WDT_MODE            2           // WDT mode (0=reset on WDT timeout, 1=repeated interrupt on WDT timeout, 2=interrupt and then restart WDT)
+#define WDT_CLK             1           // WDT clock (0=WDT OSC, 1=IRC)
 
 #define RIT_RESET           1           // Repetitive Interrupt Timer reset (0=don't reset, 1=reset on match)
 #define RIT_PRIORITY        4           // Repetitive Interrupt Timer priority (note to self: this needs to be <3 in some circumstances, can't work out why...)
@@ -68,7 +68,7 @@
 #define WAKEUP_HYS          0           // Set 1 to enable hysteresis on the WAKEUP pin
 */
 
-#define STARTUP_DELAY       1000     // Startup delay (in terms of empty loop
+#define STARTUP_DELAY       0           // Startup delay (in terms of empty loop
 
 // ****************************************************************************
 // *** GPIO Config
@@ -148,7 +148,7 @@
 #define SSP0_CLK_POL        0           // Clock polarity (0=CLK low between frames, 1=CLK high between frames)
 #define SSP0_CLK_PHA        0           // Clock phase (0=Capture data on transition away from inter-frame state, 1=Capture data on transition to inter-frame state)
 
-#define SSP0_SSEL           2           // Use SSEL pin (2=automatically use SSEL, 1=manually use SSEL, 0=don't use)
+#define SSP0_SSEL           1           // Use SSEL pin (2=automatically use SSEL, 1=manually use SSEL, 0=don't use)
 
 #define SSP0_INT_LEVEL      0           // Interrupt level (0=interrupt whenever data received, 1=interrupt when FIFO half-full (4 frames)
 #define SSP0_PRIORITY       2           // SSP interrupt priority
@@ -191,17 +191,23 @@
 #define ILINK_MAX_FETCH     256          // Maximum characters to fetch at once
 
 #if WHO_AM_I == I_AM_THALAMUS
-
+    // ****************************************************************************
+    // *** RX Functions (Thalamus only)
+    // ****************************************************************************
+    #define RX_EN           1              // Enable RX library functions
+    #define RX_TYPE         0               // 0: Spektrum satellite decode
+                                            // 1: Futaba S.Bus decode
+    
     // ****************************************************************************
     // *** PWM Functions (Thalamus only)
     // ****************************************************************************
 
-    #define PWM_DEFAULT_N   900            	// Default PWM outputs (in microseconds), 
-    #define PWM_DEFAULT_E   900            	//  use low values (i.e. 1000) for ESCs
-    #define PWM_DEFAULT_S   900
-    #define PWM_DEFAULT_W   900
-    #define PWM_DEFAULT_X   900
-    #define PWM_DEFAULT_Y   900
+    #define PWM_DEFAULT_N   1000            // Default PWM outputs (in microseconds), 
+    #define PWM_DEFAULT_E   1000            //  use low values (i.e. 1000) for ESCs
+    #define PWM_DEFAULT_S   1000
+    #define PWM_DEFAULT_W   1000
+    #define PWM_DEFAULT_X   1500
+    #define PWM_DEFAULT_Y   1500
 
     #define PWM_FILTERS_ON  0               // PWM output filters (filter is SPR)
 
@@ -209,25 +215,25 @@
     #define PWM_XY_FILTER   0               // value is between 0 and 1, lower is less filterig
 
     #define PWM_NESWFREQ    400             // PWM frequency (maximum 450)
-    #define PWM_XYFREQ      400              // This value needs to be a fraction of PWM_NESWFREQ
+    #define PWM_XYFREQ      100             // This value needs to be a fraction of PWM_NESWFREQ
 
     // ****************************************************************************
     // *** IMU Functions (Thalamus only)
     // ****************************************************************************
 
-    #define ACCEL_RANGE         0           // Set the dynamic range: 0=+/- 2g, 1= +/- 4g, 2=+/-8g, 3=+/-16g
-    #define ACCEL_RATE          5           // Set the data rate: 0=off, 1=1Hz, 2=10Hz, 3=25Hz, 4=50Hz, 5=100Hz, 6=200Hz, 7=400Hz, 8=1.620kHz (low power mode ONLY), 9=1.344kHz (normal)/5.376kHz (low power mode)
+    #define ACCEL_RANGE         1           // Set the dynamic range: 0=+/- 2g, 1= +/- 4g, 2=+/-8g, 3=+/-16g
+    #define ACCEL_RATE          7           // Set the data rate: 0=off, 1=1Hz, 2=10Hz, 3=25Hz, 4=50Hz, 5=100Hz, 6=200Hz, 7=400Hz, 8=1.620kHz (low power mode ONLY), 9=1.344kHz (normal)/5.376kHz (low power mode)
     #define ACCEL_LOW_POWER     0           // Set to enable low power mode
 
     #define GYRO_RANGE          2           // Set dynamic range: 0=250dps, 1=500dps, 2=2000dps, 3=2000dps
-    #define GYRO_RATE           3           // Set the data rate: 0=100Hz, 1=200Hz, 2=400Hz, 3=800Hz
-    #define GYRO_BANDWIDTH      3           // Sets the bandwidth
+    #define GYRO_RATE           2           // Set the data rate: 0=100Hz, 1=200Hz, 2=400Hz, 3=800Hz
+    #define GYRO_BANDWIDTH      2           // Sets the bandwidth
                                                 //      For Gyro rate 0 (100Hz): 0=12.5Hz, 1=25Hz, 2=25Hz, 3=25Hz
                                                 //      For Gyro rate 1 (200Hz): 0=12.5Hz, 1=25Hz, 2=50Hz, 3=70Hz
                                                 //      For Gyro rate 2 (400Hz): 0=20Hz, 1=25Hz, 2=50Hz, 3=110Hz
                                                 //      For Gyro rate 3 (800Hz): 0=30Hz, 1=35Hz, 2=30Hz, 3=110Hz
     #define GYRO_LPF            1           // Set to enable the low pass filter
-
+    
     #define MAGNETO_MODE        0           // Set to 0 for continuous mode, 1 for single-measurement mode
     #define MAGNETO_AVERAGING   3           // Set to 0 for no averaging, 1 for two-sample, 2 for four-sample, and 3 for eight-sample averaging
     #define MAGNETO_RATE        6           // Continuous mode sample rate, 0=0.75Hz, 1=1.5Hz, 2=3Hz, 3=7.5Hz, 4=15Hz, 5=30Hz, 6=75Hz
@@ -236,8 +242,9 @@
     #define MAGNETO_TRIES_MAX   5           // When in single-measurement mode, how many tries to read data from the stream before giving up?
     #define MAGNETO_TRIES_DELAY 1           // Millisecond delay between trying to read data from the magneto
 
-    #define BARO_EN                 0           // Set to 1 to enable the barometer functions (set to 0 to disable and save some RAM)
-    #define BARO_OVERSAMPLE         3           // Sets the barometer oversampling mode, 0: ultra low power, 1: standard, 2: high resolution, 3: ultra high resolution
+    #define BARO_PRES_AVERAGING 9           // Pressure oversampling internal averages: 0=1, 1=2, 2=4, 3=8, 4=16, 5=32, 6=64, 7=128, 8=256, 9=384, 10=512 (512/128 not available on ODR=25/25Hz)
+    #define BARO_TEMP_AVERAGING 4           // Temperature oversampling internal averages: 0=1, 1=2, 2=4, 3=8, 4=16, 5=32, 6=64, 7=128 (512/128 not available on ODR=25Hz)
+    #define BARO_RATE           7           // Sets the output data rate (pressure/temperature): 0=one shot, 1=1/1Hz, 2=7/1Hz, 3=12.5/1Hz, 4=25/1Hz,  5=7/7Hz, 6=12.5/12.5Hz, 7=25Hz/25Hz
 
 #endif
 
@@ -276,6 +283,7 @@
     
     #define GPS_BUFFER_SIZE     64          // Size of the GPS buffer, determines the largest packet that can be stored
     
+    
     // ****************************************************************************
     // *** Flash Functions (Hypo only)
     // ****************************************************************************
@@ -285,8 +293,11 @@
 #endif
 
 #if WHO_AM_I == I_AM_HYPX
+    #define XBEE_EN             1           // Set to 1 to enable the XBee code
 
-
+    #define XBEE_POWER_LEVEL    0           // Set transmit power: 4=18dBm/63mW, 3=16dBm/40mW, 2=14dBm/25mW, 1=12dBm/16mW, 0=0dBm/1mW
+    #define XBEE_BUFFER_SIZE    128         // XBee buffer size
+    #define XBEE_JOINPERIOD     60          // Number of seconds to allow bind
 #endif
 
 

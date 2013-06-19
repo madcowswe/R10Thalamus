@@ -38,8 +38,8 @@ OBJS=$(SRCS:.c=.o)
 
 ### Compiler stuff
 
-CFLAGS  = -c -g -Os $(INCLUDE) -Wall -mthumb -ffunction-sections -fdata-sections -fmessage-length=0 -mcpu=$(CORTEX) -DTARGET=$(MPU) -fno-builtin
-ASFLAGS = -c -g -Os $(INCLUDE) -Wall -mthumb -ffunction-sections -fdata-sections -fmessage-length=0 -mcpu=$(CORTEX) -D__ASSEMBLY__ -x assembler-with-cpp
+CFLAGS  = -c -g -O3 $(INCLUDE) -Wall -mthumb -ffunction-sections -fdata-sections -fmessage-length=0 -mcpu=$(CORTEX) -DTARGET=$(MPU) -fno-builtin
+ASFLAGS = -c -g -O3 $(INCLUDE) -Wall -mthumb -ffunction-sections -fdata-sections -fmessage-length=0 -mcpu=$(CORTEX) -D__ASSEMBLY__ -x assembler-with-cpp
 LDFLAGS = -nostartfiles -mthumb -mcpu=$(CORTEX) -Wl,--gc-sections
 OCFLAGS = --strip-unneeded
 
