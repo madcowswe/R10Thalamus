@@ -334,6 +334,7 @@ typedef struct{
 	float valueOld;
 	float derivative;
 	float integral;
+    float bias;
 } directionStruct;
 
 directionStruct pitch;
@@ -424,7 +425,7 @@ signed short yawtrim;
 signed short throttletrim;
 float throttle;
 float nonLinearThrottle(float input);
-unsigned int auxState, flapState;
+unsigned int auxState, flapState, flapEdge;
 
 float pitchcorrectionav, rollcorrectionav, yawcorrectionav;
 
@@ -537,6 +538,7 @@ void setup() {
 		throttle = 0;
 		rxFirst = 0;
         auxState = 0;
+        flapEdge = 0;
         RXInit();
 		
         
@@ -582,6 +584,8 @@ void setup() {
 		
 		pitch_dd = 0;
 		roll_dd = 0;
+        pitch.bias = 0;
+        roll.bias = 0;
         
         /*thetaAngle = 0;
         phiAngle = 0;
@@ -1125,6 +1129,7 @@ void Timer0Interrupt0() {
                 }
                 
                 // Controller's flap switch
+                flapEdge = 0;
                 if(rcInput[RX_FLAP] < MIDSTICK) {
                     if(flapState == 1) {
                         // do something on switch
@@ -1134,8 +1139,10 @@ void Timer0Interrupt0() {
                 else {
                     if(flapState == 0) {
                         // do something on switch
-						gim_ptemp += 1;
-						if(gim_ptemp > 6) gim_ptemp = -6;
+						/*gim_ptemp += 1;
+						if(gim_ptemp > 6) gim_ptemp = -6;*/
+                        
+                        flapEdge = 1;
                     }
                     flapState = 1;
                 }
@@ -1361,9 +1368,14 @@ void Timer0Interrupt0() {
                 }
             }
             
-			
+            pitch.demandtemp += pitch.bias;
+            roll.demandtemp += roll.bias;
             
-            
+            if(flapEdge == 1) {
+                pitch.bias = pitch.demandtemp;
+                roll.bias = roll.demandtemp;
+                flapEdge = 0;
+            }
             
             if(pitch.demandtemp > pitch.demand) {
                 if(pitch.demandtemp - pitch.demand > LIM_RATE/(float)FAST_RATE && pitch.demand > 0) pitch.demand = pitch.demand + LIM_RATE/(float)FAST_RATE;
