@@ -13,7 +13,6 @@ unsigned char flashPLED, flashVLED, flashRLED;
 float gim_ptemp;
 
 // *** ILink stuff
-
 ilink_identify_t ilink_identify;
 ilink_thalstat_t ilink_thalstat;
 ilink_thalctrl_t ilink_thalctrl;
@@ -21,7 +20,7 @@ ilink_imu_t ilink_rawimu;
 ilink_imu_t ilink_scaledimu;
 ilink_altitude_t ilink_altitude;
 ilink_attitude_t ilink_attitude;
-ilink_attitude_t ilink_attitude_rx;
+ilink_attitude_t ilink_attitude_demand;
 ilink_thalparam_t ilink_thalparam_tx;
 ilink_thalparam_t ilink_thalparam_rx;
 ilink_thalpareq_t ilink_thalpareq;
@@ -133,9 +132,9 @@ struct paramStorage_struct paramStorage[] = {
 
     // Mode
     {"MODE_SIMP",       0.0f},  // Simplicity Mode  (0 for off 1 for on)
-    {"MODE_ULTRA",      1.0f},  // Ultrasound Mode
+    {"MODE_ULTRA",      0.0f},  // Ultrasound Mode
     {"MODE_GIM",        1.0f},	// Gimbal Lock
-    {"MODE_SWTCH",      5.0f}, 	// AUX1 SWITCH: 1 to toggle simplicity, 2 to toggle Ultra, 3 to toggle Gimbal, 4 to toggle GPS
+    {"MODE_SWTCH",      2.0f}, 	// AUX1 SWITCH: 1 to toggle simplicity, 2 to toggle Ultra, 3 to toggle Gimbal, 4 to toggle GPS
 
     #define MODE_SIMP 		paramStorage[22].value
     #define MODE_ULTRA 		paramStorage[23].value
@@ -169,11 +168,8 @@ struct paramStorage_struct paramStorage[] = {
     #define MAGCOR_M3       paramStorage[36].value
 
     // Ultrasound
-    //{"ULTRA_Kp",        0.05f},
-    //{"ULTRA_Kd",        5.0f},
-    //{"ULTRA_Ki",        0.00001f},
-    {"ULTRA_Kp",        0.03f},
-    {"ULTRA_Kd",        3.0f},
+    {"ULTRA_Kp",        0.05f},
+    {"ULTRA_Kd",        5.0f},
     {"ULTRA_Ki",        0.00001f},
     {"ULTRA_De",      	0.9999f},
     {"ULTRA_TKOFF",   	250.0f}, 
@@ -271,8 +267,6 @@ struct paramStorage_struct paramStorage[] = {
 	{"SPR_OUT",       0.3f},  
     #define SPR_OUT 		paramStorage[75].value
     
-    {"MODE_AUTO",       0.0f},
-    #define MODE_AUTO       paramStorage[76].value
 
     /*{"CURVE_X1",       30.0f},    
     {"CURVE_Y1",       45.0f},  
@@ -284,7 +278,7 @@ struct paramStorage_struct paramStorage[] = {
     #define THROTTLE_X2     paramStorage[10].value 
     #define THROTTLE_Y2     paramStorage[11].value
     #define THROTTLE_Yn     paramStorage[12].value   */
-    /*{"ADJ_UP",   1.0f},      // Ultrasound minimmum throttle
+    /*{"ADJ_UP",   1.0f},      // Ultrasound minimimumum throttle
     {"ADJ_DOWN",   30.0f},      // Ultrasound minimimumum throttle
     #define ADJ_UP          paramStorage[73].value 
     #define ADJ_DOWN        paramStorage[74].value */
@@ -299,7 +293,7 @@ void EEPROMSaveAll(void);
 
 #define EEPROM_MAX_PARAMS   100 // this should be greater than or equal to the above number of parameters
 #define EEPROM_OFFSET   0 // EEPROM Offset used for moving the EEPROM values around storage (wear levelling I guess)
-#define EEPROM_VERSION	18 // version of variables in EEPROM, change this value to invalidate EEPROM contents and restore defaults
+#define EEPROM_VERSION	181 // version of variables in EEPROM, change this value to invalidate EEPROM contents and restore defaults
 
 // *** quaternion storage
 float q1, q2, q3, q4;
@@ -430,7 +424,7 @@ float pitchcorrectionav, rollcorrectionav, yawcorrectionav;
 
 // *** Ultrasound
 float ultra;
-float ultraav = 0;
+float ultraav;
 unsigned int ultraLoss;
 float ultrathrottle;
 float ultraTkOffThrottle;
@@ -542,7 +536,7 @@ void setup() {
         
     // *** Initialise Ultrasound
         UltraInit();
-        //UltraFast();
+        UltraFast();
 		alt.demandincr =  0;
         
     // *** Battery sensor
@@ -1095,9 +1089,6 @@ void Timer0Interrupt0() {
                             MODE_GPS = 0;
                             ilink_thalstat.flightMode &= ~(0x1 << 4);
                         }
-                        if (MODE_SWTCH == 5) {
-                            MODE_AUTO = 0;
-                        }
                     }
                     auxState = 2;
                 }
@@ -1116,9 +1107,6 @@ void Timer0Interrupt0() {
                         if (MODE_SWTCH == 4) {
                             MODE_GPS = 1;
                             ilink_thalstat.flightMode |= (0x1 << 4);
-                        }
-                        if (MODE_SWTCH == 5) {
-                            MODE_AUTO = 1;
                         }
                     }
                     auxState = 1;
@@ -1171,8 +1159,8 @@ void Timer0Interrupt0() {
 					
                 ultraLoss = 0;
 				
-				//if(ultra - ultraav > LIM_ULTRA/SLOW_DIVIDER) ultra = ultraav + LIM_ULTRA/SLOW_DIVIDER;
-				//if(ultraav - ultra > LIM_ULTRA/SLOW_DIVIDER) ultra = ultraav - LIM_ULTRA/SLOW_DIVIDER;
+				if(ultra - ultraav > LIM_ULTRA/SLOW_DIVIDER) ultra = ultra + LIM_ULTRA/SLOW_DIVIDER;
+				if(ultraav - ultra > LIM_ULTRA/SLOW_DIVIDER) ultra = ultra - LIM_ULTRA/SLOW_DIVIDER;
                 
                 ultraav *= SPR_ULTRA;
                 ultraav += (1-SPR_ULTRA) * ultra;
@@ -1180,8 +1168,6 @@ void Timer0Interrupt0() {
                 alt.valueOld = alt.value;
                 alt.value = ultraav;
 				
-				ilink_altitude.relAlt = ultraav;
-
 			}
             else {
                 ultraLoss++;
@@ -1343,24 +1329,14 @@ void Timer0Interrupt0() {
             
         }
         else {
+            pitch.demandtemp = -((float)MIDSTICK - (float)rcInput[RX_ELEV])*PITCH_SENS; 
+            roll.demandtemp = ((float)MIDSTICK - (float)rcInput[RX_AILE])*ROLL_SENS;
             float tempf = 0;
-            if (throttle > 350) yaw_lock++;
-            if (yaw_lock > 2001) yaw_lock = 2001;
-            
-            if(MODE_AUTO) {
-                pitch.demandtemp = ilink_attitude_rx.pitch;
-                roll.demandtemp = ilink_attitude_rx.roll;
-                tempf = ilink_attitude_rx.yaw;
-            }
-            else {
-                pitch.demandtemp = -((float)MIDSTICK - (float)rcInput[RX_ELEV])*PITCH_SENS; 
-                roll.demandtemp = ((float)MIDSTICK - (float)rcInput[RX_AILE])*ROLL_SENS;
-                
-                if ((CFDC_count == 10) || (yaw_lock > 2000)) {
-                    tempf = -(float)(yawtrim - rcInput[RX_RUDD])*YAW_SENS; //3125
-                }
-            }
-            
+			if (throttle > 350) yaw_lock++;
+			if (yaw_lock > 2001) yaw_lock = 2001;
+            if ((CFDC_count == 10) || (yaw_lock > 2000)) {
+				tempf = -(float)(yawtrim - rcInput[RX_RUDD])*YAW_SENS; //3125
+			}
 			
             
             
@@ -1387,19 +1363,18 @@ void Timer0Interrupt0() {
             //roll.demand = roll.demandav;
             // Yaw
             
-            
-            if(fabsf(tempf) > YAW_DEADZONE || MODE_AUTO) {
+            if(fabsf(tempf) > YAW_DEADZONE) {
                 yaw.demand += tempf;
+                if(yaw.demand > M_PI) {
+                    yaw.demand -= M_TWOPI;
+                    yaw.demandOld -= M_TWOPI;
+                }
+                else if(yaw.demand < -M_PI) {
+                    yaw.demand += M_TWOPI;
+                    yaw.demandOld += M_TWOPI;
+                }
             }
             
-            if(yaw.demand > M_PI) {
-                yaw.demand -= M_TWOPI;
-                yaw.demandOld -= M_TWOPI;
-            }
-            else if(yaw.demand < -M_PI) {
-                yaw.demand += M_TWOPI;
-                yaw.demandOld += M_TWOPI;
-            }
 
             lat_diff = (double)(ilink_position.targetX - ilink_position.craftX) * (double)111194.92664455873734580834; // 111194.92664455873734580834f is radius of earth and deg-rad conversion: 6371000*PI()/180
             lon_diff = (double)(ilink_position.targetY - ilink_position.craftY) * (double)111194.92664455873734580834 * fcos((float)((double)ilink_position.craftX*(double)0.01745329251994329577)); // 0.01745329251994329577f is deg-rad conversion PI()/180
@@ -1666,11 +1641,12 @@ void Timer0Interrupt0() {
 				alt.error = alt.demand - alt.value;
                 
 				alt.derivative = alt.value - alt.valueOld;
-			
-				alt.integral *= ULTRA_De;				
-				if(airborne == 1) {
-					alt.integral += alt.error;
-				}
+				
+					
+
+				alt.integral *= ULTRA_De;
+				alt.integral += alt.error;
+
 
 				if ((ultraLoss >= ULTRA_OVTH) && (throttle > 200)) {   // when consective ultrasound altitude data losses rise above ULTRA_OVTH, throttle level is reduced
 						
@@ -1688,8 +1664,7 @@ void Timer0Interrupt0() {
 					throttle = ultraTkOffThrottle + ultrathrottle;
 				}
                 
-				ilink_altitude.absAlt = alt.demand;
-				
+               
 			
 			//////////////////////////////////////////////////////////////////////////////////////
 
@@ -1817,9 +1792,9 @@ void ReadGyroSensors(void) { // 400Hz -ish
         Gyro.X.raw = data[0];
         Gyro.Y.raw = data[1];
         Gyro.Z.raw = data[2];
-        ilink_rawimu.xGyro = Gyro.X.raw;
-        ilink_rawimu.yGyro = Gyro.Y.raw;
-        ilink_rawimu.zGyro = Gyro.Z.raw;
+        // ilink_rawimu.xGyro = Gyro.X.raw; temporarily requisitioned
+        // ilink_rawimu.yGyro = Gyro.Y.raw;
+        // ilink_rawimu.zGyro = Gyro.Z.raw;
         Gyro.X.total -= Gyro.X.history[Gyro.count];
         Gyro.Y.total -= Gyro.Y.history[Gyro.count];
         Gyro.Z.total -= Gyro.Z.history[Gyro.count];
@@ -1854,9 +1829,9 @@ void ReadAccelSensors(void) {
         Accel.X.raw = data[0];
         Accel.Y.raw = data[1];
         Accel.Z.raw = data[2];
-        ilink_rawimu.xAcc = Accel.X.raw; //temporarily repurposed
-        ilink_rawimu.yAcc = Accel.Y.raw; //temporarily repurposed
-        ilink_rawimu.zAcc = Accel.Z.raw; //temporarily repurposed
+        //ilink_rawimu.xAcc = Accel.X.raw; //temporarily repurposed
+        // ilink_rawimu.yAcc = Accel.Y.raw; //temporarily repurposed
+        // ilink_rawimu.zAcc = Accel.Z.raw; //temporarily repurposed
         Accel.X.total -= Accel.X.history[Accel.count];
         Accel.Y.total -= Accel.Y.history[Accel.count];
         Accel.Z.total -= Accel.Z.history[Accel.count];
@@ -1881,7 +1856,6 @@ void ReadAccelSensors(void) {
         ilink_scaledimu.zAcc = Accel.Z.value * 1000;
     }
 }
-
 
 void ReadMagSensors(void) { // 50Hz-ish
     float sumsqu, temp1, temp2, temp3;
@@ -1926,12 +1900,10 @@ void ReadMagSensors(void) { // 50Hz-ish
         temp2 = MAGCOR_N5 * temp2 + MAGCOR_N6 * temp3;
         temp3 = MAGCOR_N9 * temp3;
 		
-        //wtf
-		/*
+		
 		ilink_rawimu.xAcc = throttle; // temporarily requisitioned
 		ilink_rawimu.yAcc = airborne; // temporarily requisitioned
-		*/
-
+		
 		
 		
 		/////////////Current Field Distortion Compensation (CFDC)
@@ -2120,7 +2092,6 @@ void ILinkMessage(unsigned short id, unsigned short * buffer, unsigned short len
         case ID_ILINK_THALPARAM: ptr = (unsigned short *) &ilink_thalparam_rx; break;
         case ID_ILINK_THALCTRL: ptr = (unsigned short *) &ilink_thalctrl; break;
         case ID_ILINK_POSITION: ptr = (unsigned short *) &ilink_position; break;
-        case ID_ILINK_ATTITUDE: ptr = (unsigned short *) &ilink_attitude_rx; LEDToggle(PLED); break;
     }
     
     if(ptr) {
