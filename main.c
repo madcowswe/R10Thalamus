@@ -1355,9 +1355,9 @@ void Timer0Interrupt0() {
             if (yaw_lock > 2001) yaw_lock = 2001;
             
             if(MODE_AUTO) {
-                pitch.demandtemp = ilink_attitude_rx.pitch;
+                pitch.demandtemp = -ilink_attitude_rx.pitch;
                 roll.demandtemp = ilink_attitude_rx.roll;
-                tempf = ilink_attitude_rx.yaw;
+                tempf = -ilink_attitude_rx.yaw;
             }
             else {
                 pitch.demandtemp = -((float)MIDSTICK - (float)rcInput[RX_ELEV])*PITCH_SENS; 
