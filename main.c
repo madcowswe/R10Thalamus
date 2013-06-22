@@ -7,6 +7,8 @@
 #define MESSAGE_LOOP_HZ     15          // Max frequency of messages in Hz (keep this number low, like around 15)
 #define RX_PANIC            2           // Number of seconds after missing RX before craft considered "disconnected"
 
+#define THROT_SENS          1.1
+
 // *** LED stuff
 unsigned char flashPLED, flashVLED, flashRLED;
 
@@ -1303,7 +1305,7 @@ void Timer0Interrupt0() {
         // *** Flight Control
         // Control Inputs
         
-        if(rcInput[RX_THRO] - throttletrim <  OFFSTICK && rxFirst != 0) {
+        if((rcInput[RX_THRO] - throttletrim)*THROT_SENS <  OFFSTICK && rxFirst != 0) {
             if(rxLoss < 50) {
                 if(rcInput[RX_AILE] < MAXTHRESH && rcInput[RX_AILE] > MINTHRESH) {
                     if(rcInput[RX_ELEV] > MAXTHRESH) {
@@ -1606,7 +1608,7 @@ void Timer0Interrupt0() {
 				if(airborne == 0) {
 					
 					// We use Manual Throttle to lift off
-					throttle = rcInput[RX_THRO]  - throttletrim;
+					throttle = (rcInput[RX_THRO]  - throttletrim)*THROT_SENS;
 					alt.demandincr =  0;
 					
 					// If someone increases the throttle violently, turn the motors back off
@@ -1628,13 +1630,8 @@ void Timer0Interrupt0() {
 			
 		
 				// Create a deadzone around throttle at lift off, if new stick position is higher than this deadzone then increase altitude demand and vice versa		
-				if (((((float)rcInput[RX_THRO] - (float) throttletrim) - ultraTkOffThrottle) > ULTRA_DEAD) || ((((float)rcInput[RX_THRO] - (float) throttletrim) - ultraTkOffThrottle) < -ULTRA_DEAD)) {
-                    ilink_attitude.roll = alt.demandincr;
-                    ilink_attitude.pitch = (float)rcInput[RX_THRO] - (float) throttletrim;
-                    ilink_attitude.yaw = ultraTkOffThrottle;
-                    ilink_attitude.pitchRate = (ULTRA_DRMP/FAST_RATE);
-
-                    alt.demandincr =  alt.demandincr + (((float)rcInput[RX_THRO] - (float) throttletrim) - ultraTkOffThrottle)*(ULTRA_DRMP/FAST_RATE);
+				if (((((float)rcInput[RX_THRO] - (float) throttletrim)*THROT_SENS - ultraTkOffThrottle) > ULTRA_DEAD) || ((((float)rcInput[RX_THRO] - (float) throttletrim)*THROT_SENS - ultraTkOffThrottle) < -ULTRA_DEAD)) {
+                    alt.demandincr =  alt.demandincr + (((float)rcInput[RX_THRO] - (float) throttletrim)*THROT_SENS - ultraTkOffThrottle)*(ULTRA_DRMP/FAST_RATE);
 				
                 
                     ilink_attitude.rollRate = alt.demandincr;
@@ -1711,7 +1708,7 @@ void Timer0Interrupt0() {
         
         
         if ((MODE_ULTRA == 0) && (MODE_GPS == 0)) {
-            throttle = rcInput[RX_THRO] - throttletrim;
+            throttle = (rcInput[RX_THRO] - throttletrim)*THROT_SENS;
             alt.demandincr = 0;
         }
         
@@ -1736,7 +1733,7 @@ void Timer0Interrupt0() {
         tempS = (signed short)motorSav + (signed short)throttle + THROTTLEOFFSET;
         tempW = (signed short)motorWav + (signed short)throttle + THROTTLEOFFSET;
         
-        if (rcInput[RX_THRO] - throttletrim <  OFFSTICK || throttleHoldOff > 0 || rxLoss > 25) {
+        if ((rcInput[RX_THRO] - throttletrim)*THROT_SENS <  OFFSTICK || throttleHoldOff > 0 || rxLoss > 25) {
             pitch.integral=0;
             roll.integral=0;
             alt.integral = 0;
@@ -1747,7 +1744,7 @@ void Timer0Interrupt0() {
 			yaw_lock = 0;
             
             
-            if(rcInput[RX_THRO] - throttletrim <  OFFSTICK) throttleHoldOff = 0;
+            if((rcInput[RX_THRO] - throttletrim)*THROT_SENS <  OFFSTICK) throttleHoldOff = 0;
             
             yaw.demand = -psiAngle;
             yaw.demandOld = -psiAngle;
